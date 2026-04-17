@@ -9,6 +9,10 @@ import * as schema from './schema.js';
 
 const DATA_DIR = join(homedir(), '.att');
 
+function normalizeModel(model: string): string {
+  return model.trim().toLowerCase();
+}
+
 export class Repository {
   private db: ReturnType<typeof drizzle>;
   private sqlite: Database.Database;
@@ -84,6 +88,29 @@ export class Repository {
       DELETE FROM usage_records
       WHERE source = 'claude-code' AND session_id = 'aggregate'
     `).run();
+
+    // Older Claude syncs also stored model names with inconsistent casing.
+    // Keep the lowercase row when both variants exist, then normalize the rest.
+    this.sqlite.prepare(`
+      DELETE FROM daily_usage
+      WHERE source = 'claude-code'
+        AND model != LOWER(model)
+        AND EXISTS (
+          SELECT 1
+          FROM daily_usage canonical
+          WHERE canonical.date = daily_usage.date
+            AND canonical.source = daily_usage.source
+            AND canonical.model = LOWER(daily_usage.model)
+        )
+    `).run();
+
+    this.sqlite.prepare(`
+      UPDATE daily_usage
+      SET model = LOWER(model),
+          id = date || '-' || source || '-' || LOWER(model)
+      WHERE source = 'claude-code'
+        AND model != LOWER(model)
+    `).run();
   }
 
   // --- Sync operations ---
@@ -97,8 +124,9 @@ export class Repository {
 
     const tx = this.sqlite.transaction((rows: UsageRecord[]) => {
       for (const r of rows) {
+        const model = normalizeModel(r.model);
         stmt.run(
-          r.id, r.source, r.model, r.inputTokens, r.outputTokens,
+          r.id, r.source, model, r.inputTokens, r.outputTokens,
           r.cacheReadTokens, r.totalTokens, r.costUSD, r.sessionId,
           r.usageDate, r.recordedAt, r.metadata ? JSON.stringify(r.metadata) : null
         );
@@ -117,9 +145,10 @@ export class Repository {
 
     const tx = this.sqlite.transaction((rows: DailyUsage[]) => {
       for (const r of rows) {
-        const id = `${r.date}-${r.source}-${r.model}`;
+        const model = normalizeModel(r.model);
+        const id = `${r.date}-${r.source}-${model}`;
         stmt.run(
-          id, r.date, r.source, r.model, r.inputTokens, r.outputTokens,
+          id, r.date, r.source, model, r.inputTokens, r.outputTokens,
           r.cacheReadTokens, r.totalTokens, r.costUSD, r.messageCount,
           r.sessionCount, r.toolCallCount
         );

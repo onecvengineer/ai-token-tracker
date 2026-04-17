@@ -52,8 +52,135 @@ interface ZhipuModelUsageResponse {
   };
 }
 
+interface TokenBreakdown {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+}
+
 function normalizeModel(model: string): string {
   return model.trim().toLowerCase();
+}
+
+function allocateByRatio(totalTokens: number, usage?: ModelUsage): TokenBreakdown {
+  if (!usage || totalTokens <= 0) {
+    return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
+  }
+
+  const parts = [
+    { key: 'inputTokens' as const, value: usage.inputTokens },
+    { key: 'outputTokens' as const, value: usage.outputTokens },
+    { key: 'cacheReadTokens' as const, value: usage.cacheReadInputTokens },
+  ];
+  const aggregateTotal = parts.reduce((sum, part) => sum + part.value, 0);
+  if (aggregateTotal <= 0) {
+    return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
+  }
+
+  const raw = parts.map((part) => {
+    const scaled = totalTokens * (part.value / aggregateTotal);
+    return {
+      key: part.key,
+      integer: Math.floor(scaled),
+      fraction: scaled - Math.floor(scaled),
+    };
+  });
+
+  let assigned = raw.reduce((sum, part) => sum + part.integer, 0);
+  const result: TokenBreakdown = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
+
+  for (const part of raw) {
+    result[part.key] = part.integer;
+  }
+
+  raw
+    .sort((a, b) => b.fraction - a.fraction)
+    .slice(0, Math.max(0, totalTokens - assigned))
+    .forEach((part) => {
+      result[part.key] += 1;
+      assigned += 1;
+    });
+
+  return result;
+}
+
+function scaleBreakdownToTotal(
+  breakdown: TokenBreakdown,
+  targetTotal: number,
+): TokenBreakdown {
+  const currentTotal = breakdown.inputTokens + breakdown.outputTokens + breakdown.cacheReadTokens;
+  if (currentTotal <= 0 || targetTotal <= 0) {
+    return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
+  }
+
+  return allocateByRatio(targetTotal, {
+    inputTokens: breakdown.inputTokens,
+    outputTokens: breakdown.outputTokens,
+    cacheReadInputTokens: breakdown.cacheReadTokens,
+    cacheCreationInputTokens: 0,
+    costUSD: 0,
+  });
+}
+
+function mergeDailyUsage(existing: DailyUsage | undefined, incoming: DailyUsage): DailyUsage {
+  if (!existing) return incoming;
+
+  const incomingHasBreakdown = incoming.inputTokens + incoming.outputTokens + incoming.cacheReadTokens > 0;
+  const existingHasBreakdown = existing.inputTokens + existing.outputTokens + existing.cacheReadTokens > 0;
+  const totalTokens = incoming.totalTokens > 0 ? incoming.totalTokens : existing.totalTokens;
+
+  let breakdown: TokenBreakdown;
+  if (incomingHasBreakdown) {
+    breakdown = {
+      inputTokens: incoming.inputTokens,
+      outputTokens: incoming.outputTokens,
+      cacheReadTokens: incoming.cacheReadTokens,
+    };
+  } else if (existingHasBreakdown) {
+    breakdown = scaleBreakdownToTotal({
+      inputTokens: existing.inputTokens,
+      outputTokens: existing.outputTokens,
+      cacheReadTokens: existing.cacheReadTokens,
+    }, totalTokens);
+  } else {
+    breakdown = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
+  }
+
+  return {
+    ...existing,
+    ...incoming,
+    inputTokens: breakdown.inputTokens,
+    outputTokens: breakdown.outputTokens,
+    cacheReadTokens: breakdown.cacheReadTokens,
+    totalTokens,
+    costUSD: incoming.costUSD ?? existing.costUSD,
+    messageCount: Math.max(existing.messageCount, incoming.messageCount),
+    sessionCount: Math.max(existing.sessionCount, incoming.sessionCount),
+    toolCallCount: Math.max(existing.toolCallCount, incoming.toolCallCount),
+  };
+}
+
+function dailyUsageToRecord(entry: DailyUsage, provider: 'stats-cache' | 'zhipu' | 'merged'): UsageRecord {
+  return {
+    id: `claude-code-${entry.date}-${normalizeModel(entry.model)}`,
+    source: 'claude-code',
+    model: normalizeModel(entry.model),
+    inputTokens: entry.inputTokens,
+    outputTokens: entry.outputTokens,
+    cacheReadTokens: entry.cacheReadTokens,
+    totalTokens: entry.totalTokens,
+    costUSD: entry.costUSD,
+    sessionId: `${provider}:${entry.date}`,
+    usageDate: entry.date,
+    recordedAt: new Date().toISOString(),
+    metadata: {
+      aggregated: true,
+      provider,
+      messageCount: entry.messageCount,
+      sessionCount: entry.sessionCount,
+      toolCallCount: entry.toolCallCount,
+    },
+  };
 }
 
 export class ClaudeCodeCollector implements ICollector {
@@ -79,30 +206,35 @@ export class ClaudeCodeCollector implements ICollector {
       this.collectFromZhipuAPI(),
     ]);
 
-    const allRecords: UsageRecord[] = [];
     const dailyMap = new Map<string, DailyUsage>();
 
     // Merge stats-cache data
     if (results[0].status === 'fulfilled' && results[0].value) {
       const r = results[0].value;
-      allRecords.push(...r.records);
       for (const d of r.dailyUsage) {
         const key = `${d.date}-${normalizeModel(d.model)}`;
-        dailyMap.set(key, d);
+        dailyMap.set(key, mergeDailyUsage(dailyMap.get(key), d));
       }
     }
 
     // Merge Zhipu API data (overrides stats-cache for overlapping dates since it's more accurate)
     if (results[1].status === 'fulfilled' && results[1].value) {
       const r = results[1].value;
-      allRecords.push(...r.records);
       for (const d of r.dailyUsage) {
         const key = `${d.date}-${normalizeModel(d.model)}`;
-        dailyMap.set(key, d); // Zhipu data takes precedence
+        dailyMap.set(key, mergeDailyUsage(dailyMap.get(key), d));
       }
     }
 
-    return { records: allRecords, dailyUsage: Array.from(dailyMap.values()) };
+    const dailyUsage = Array.from(dailyMap.values());
+    const hasStatsCache = results[0].status === 'fulfilled' && !!results[0].value;
+    const hasZhipu = results[1].status === 'fulfilled' && !!results[1].value;
+    const provider = hasStatsCache && hasZhipu ? 'merged' : hasZhipu ? 'zhipu' : 'stats-cache';
+
+    return {
+      records: dailyUsage.map((entry) => dailyUsageToRecord(entry, provider)),
+      dailyUsage,
+    };
   }
 
   private async collectFromStatsCache(): Promise<CollectorResult | null> {
@@ -129,41 +261,24 @@ export class ClaudeCodeCollector implements ICollector {
       for (const [model, totalTokens] of Object.entries(dmt.tokensByModel)) {
         const normalizedModel = normalizeModel(model);
         const modelUsage = modelUsageByName.get(normalizedModel);
+        const breakdown = allocateByRatio(totalTokens, modelUsage);
 
-        records.push({
-          id: `claude-code-${dmt.date}-${normalizedModel}`,
-          source: 'claude-code',
-          model: normalizedModel,
-          inputTokens: 0,
-          outputTokens: 0,
-          cacheReadTokens: 0,
-          totalTokens,
-          costUSD: modelUsage?.costUSD || null,
-          sessionId: `aggregate:${dmt.date}`,
-          usageDate: dmt.date,
-          recordedAt: new Date().toISOString(),
-          metadata: {
-            aggregated: true,
-            provider: 'stats-cache',
-            messageCount: activity?.messageCount ?? 0,
-            sessionCount: activity?.sessionCount ?? 0,
-            toolCallCount: activity?.toolCallCount ?? 0,
-          },
-        });
-
-        dailyUsage.push({
+        const dailyEntry: DailyUsage = {
           date: dmt.date,
           source: 'claude-code',
           model: normalizedModel,
-          inputTokens: 0,
-          outputTokens: 0,
-          cacheReadTokens: 0,
+          inputTokens: breakdown.inputTokens,
+          outputTokens: breakdown.outputTokens,
+          cacheReadTokens: breakdown.cacheReadTokens,
           totalTokens,
           costUSD: modelUsage?.costUSD || null,
           messageCount: activity?.messageCount ?? 0,
           sessionCount: activity?.sessionCount ?? 0,
           toolCallCount: activity?.toolCallCount ?? 0,
-        });
+        };
+
+        dailyUsage.push(dailyEntry);
+        records.push(dailyUsageToRecord(dailyEntry, 'stats-cache'));
       }
     }
 
@@ -227,27 +342,7 @@ export class ClaudeCodeCollector implements ICollector {
         for (const [key, agg] of dailyAgg) {
           const [date, model] = key.split('|');
           const duKey = `${date}-${model}`;
-
-          records.push({
-            id: `claude-code-${date}-${model}`,
-            source: 'claude-code',
-            model,
-            inputTokens: 0,
-            outputTokens: 0,
-            cacheReadTokens: 0,
-            totalTokens: agg.tokens,
-            costUSD: null,
-            sessionId: `zhipu:${date}`,
-            usageDate: date,
-            recordedAt: new Date().toISOString(),
-            metadata: {
-              aggregated: true,
-              provider: 'zhipu',
-              toolCallCount: agg.calls,
-            },
-          });
-
-          dailyMap.set(duKey, {
+          const dailyEntry: DailyUsage = {
             date,
             source: 'claude-code',
             model,
@@ -259,7 +354,10 @@ export class ClaudeCodeCollector implements ICollector {
             messageCount: 0,
             sessionCount: 0,
             toolCallCount: agg.calls,
-          });
+          };
+
+          records.push(dailyUsageToRecord(dailyEntry, 'zhipu'));
+          dailyMap.set(duKey, dailyEntry);
         }
       } catch {
         // Skip failed chunks
