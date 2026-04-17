@@ -1,0 +1,20 @@
+{
+  "name": "ai-token-tracker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI Token usage tracker for Claude Code, Codex, and Hermes",
+  "scripts": {
+    "build": "turbo build",
+    "dev": "turbo dev",
+    "lint": "turbo lint",
+    "type-check": "turbo type-check"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.0",
+    "typescript": "^5.8.0"
+  },
+  "packageManager": "pnpm@10.8.0",
+  "pnpm": {
+    "onlyBuiltDependencies": ["better-sqlite3", "esbuild", "sharp"]
+  }
+}
