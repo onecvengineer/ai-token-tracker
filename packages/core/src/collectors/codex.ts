@@ -156,6 +156,7 @@ export class CodexCollector implements ICollector {
           existing.outputTokens += outputTokens;
           existing.cacheReadTokens += cacheReadTokens;
           existing.totalTokens += totalTokens;
+          existing.messageCount += rollout?.turnCount ?? 0;
           existing.sessionCount += 1;
         } else {
           dailyMap.set(key, {

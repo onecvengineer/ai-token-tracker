@@ -52,6 +52,10 @@ interface ZhipuModelUsageResponse {
   };
 }
 
+function normalizeModel(model: string): string {
+  return model.trim().toLowerCase();
+}
+
 export class ClaudeCodeCollector implements ICollector {
   readonly source: Source = 'claude-code';
   private readonly claudeDir: string;
@@ -83,7 +87,7 @@ export class ClaudeCodeCollector implements ICollector {
       const r = results[0].value;
       allRecords.push(...r.records);
       for (const d of r.dailyUsage) {
-        const key = `${d.date}-${d.model}`;
+        const key = `${d.date}-${normalizeModel(d.model)}`;
         dailyMap.set(key, d);
       }
     }
@@ -93,7 +97,7 @@ export class ClaudeCodeCollector implements ICollector {
       const r = results[1].value;
       allRecords.push(...r.records);
       for (const d of r.dailyUsage) {
-        const key = `${d.date}-${d.model}`;
+        const key = `${d.date}-${normalizeModel(d.model)}`;
         dailyMap.set(key, d); // Zhipu data takes precedence
       }
     }
@@ -110,22 +114,9 @@ export class ClaudeCodeCollector implements ICollector {
     const records: UsageRecord[] = [];
     const dailyUsage: DailyUsage[] = [];
 
+    const modelUsageByName = new Map<string, ModelUsage>();
     for (const [model, usage] of Object.entries(stats.modelUsage)) {
-      const normalizedModel = model.toLowerCase();
-      records.push({
-        id: `claude-code-${normalizedModel}`,
-        source: 'claude-code',
-        model: normalizedModel,
-        inputTokens: usage.inputTokens,
-        outputTokens: usage.outputTokens,
-        cacheReadTokens: usage.cacheReadInputTokens,
-        totalTokens: usage.inputTokens + usage.outputTokens + usage.cacheReadInputTokens,
-        costUSD: usage.costUSD || null,
-        sessionId: 'aggregate',
-        usageDate: stats.lastComputedDate,
-        recordedAt: new Date().toISOString(),
-        metadata: { contextWindow: (usage as any).contextWindow },
-      });
+      modelUsageByName.set(normalizeModel(model), usage);
     }
 
     const activityByDate = new Map<string, DailyActivity>();
@@ -136,8 +127,30 @@ export class ClaudeCodeCollector implements ICollector {
     for (const dmt of stats.dailyModelTokens) {
       const activity = activityByDate.get(dmt.date);
       for (const [model, totalTokens] of Object.entries(dmt.tokensByModel)) {
-        const normalizedModel = model.toLowerCase();
-        const modelUsage = stats.modelUsage[model];
+        const normalizedModel = normalizeModel(model);
+        const modelUsage = modelUsageByName.get(normalizedModel);
+
+        records.push({
+          id: `claude-code-${dmt.date}-${normalizedModel}`,
+          source: 'claude-code',
+          model: normalizedModel,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          totalTokens,
+          costUSD: modelUsage?.costUSD || null,
+          sessionId: `aggregate:${dmt.date}`,
+          usageDate: dmt.date,
+          recordedAt: new Date().toISOString(),
+          metadata: {
+            aggregated: true,
+            provider: 'stats-cache',
+            messageCount: activity?.messageCount ?? 0,
+            sessionCount: activity?.sessionCount ?? 0,
+            toolCallCount: activity?.toolCallCount ?? 0,
+          },
+        });
+
         dailyUsage.push({
           date: dmt.date,
           source: 'claude-code',
@@ -215,10 +228,29 @@ export class ClaudeCodeCollector implements ICollector {
           const [date, model] = key.split('|');
           const duKey = `${date}-${model}`;
 
+          records.push({
+            id: `claude-code-${date}-${model}`,
+            source: 'claude-code',
+            model,
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            totalTokens: agg.tokens,
+            costUSD: null,
+            sessionId: `zhipu:${date}`,
+            usageDate: date,
+            recordedAt: new Date().toISOString(),
+            metadata: {
+              aggregated: true,
+              provider: 'zhipu',
+              toolCallCount: agg.calls,
+            },
+          });
+
           dailyMap.set(duKey, {
             date,
             source: 'claude-code',
-            model: model.toLowerCase(),
+            model,
             inputTokens: 0, // Zhipu API only gives total tokens
             outputTokens: 0,
             cacheReadTokens: 0,

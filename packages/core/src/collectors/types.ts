@@ -40,12 +40,14 @@ export interface UsageSummary {
   bySource: Record<Source, {
     inputTokens: number;
     outputTokens: number;
+    cacheReadTokens: number;
     totalTokens: number;
     costUSD: number;
   }>;
   byModel: Record<string, {
     inputTokens: number;
     outputTokens: number;
+    cacheReadTokens: number;
     totalTokens: number;
     costUSD: number;
   }>;

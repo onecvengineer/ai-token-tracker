@@ -77,6 +77,13 @@ export class Repository {
       CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_usage(date);
       CREATE INDEX IF NOT EXISTS idx_daily_source ON daily_usage(source);
     `);
+
+    // Older Claude syncs stored lifetime aggregates as dated usage records.
+    // They corrupt any time-window query, so drop them on startup.
+    this.sqlite.prepare(`
+      DELETE FROM usage_records
+      WHERE source = 'claude-code' AND session_id = 'aggregate'
+    `).run();
   }
 
   // --- Sync operations ---
@@ -138,12 +145,26 @@ export class Repository {
 
   // --- Query operations ---
 
-  getUsageSummary(startDate?: string, endDate?: string): UsageSummary {
-    let query = 'SELECT source, model, SUM(input_tokens) as inputTokens, SUM(output_tokens) as outputTokens, SUM(cache_read_tokens) as cacheReadTokens, SUM(total_tokens) as totalTokens, SUM(cost_usd) as costUSD FROM usage_records WHERE 1=1';
+  getUsageSummary(startDate?: string, endDate?: string, source?: Source): UsageSummary {
+    let query = `
+      SELECT
+        source,
+        LOWER(model) as model,
+        SUM(input_tokens) as inputTokens,
+        SUM(output_tokens) as outputTokens,
+        SUM(cache_read_tokens) as cacheReadTokens,
+        SUM(total_tokens) as totalTokens,
+        SUM(cost_usd) as costUSD,
+        SUM(message_count) as messageCount,
+        SUM(session_count) as sessionCount
+      FROM daily_usage
+      WHERE 1=1
+    `;
     const params: any[] = [];
-    if (startDate) { query += ' AND usage_date >= ?'; params.push(startDate); }
-    if (endDate) { query += ' AND usage_date <= ?'; params.push(endDate); }
-    query += ' GROUP BY source, model';
+    if (startDate) { query += ' AND date >= ?'; params.push(startDate); }
+    if (endDate) { query += ' AND date <= ?'; params.push(endDate); }
+    if (source) { query += ' AND source = ?'; params.push(source); }
+    query += ' GROUP BY source, LOWER(model)';
 
     const rows = this.sqlite.prepare(query).all(...params) as any[];
 
@@ -155,8 +176,8 @@ export class Repository {
       totalCostUSD: 0,
       totalSessions: 0,
       totalMessages: 0,
-      bySource: {} as Record<string, { inputTokens: number; outputTokens: number; totalTokens: number; costUSD: number }>,
-      byModel: {} as Record<string, { inputTokens: number; outputTokens: number; totalTokens: number; costUSD: number }>,
+      bySource: {} as Record<Source, { inputTokens: number; outputTokens: number; cacheReadTokens: number; totalTokens: number; costUSD: number }>,
+      byModel: {} as Record<string, { inputTokens: number; outputTokens: number; cacheReadTokens: number; totalTokens: number; costUSD: number }>,
     };
 
     for (const row of rows) {
@@ -165,43 +186,54 @@ export class Repository {
       summary.totalCacheReadTokens += row.cacheReadTokens;
       summary.totalTokens += row.totalTokens;
       summary.totalCostUSD += row.costUSD || 0;
+      summary.totalMessages += row.messageCount || 0;
+      summary.totalSessions += row.sessionCount || 0;
 
       const src = row.source as Source;
       if (!summary.bySource[src]) {
-        summary.bySource[src] = { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUSD: 0 };
+        summary.bySource[src] = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalTokens: 0, costUSD: 0 };
       }
       summary.bySource[src].inputTokens += row.inputTokens;
       summary.bySource[src].outputTokens += row.outputTokens;
+      summary.bySource[src].cacheReadTokens += row.cacheReadTokens;
       summary.bySource[src].totalTokens += row.totalTokens;
       summary.bySource[src].costUSD += row.costUSD || 0;
 
       if (!summary.byModel[row.model]) {
-        summary.byModel[row.model] = { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUSD: 0 };
+        summary.byModel[row.model] = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalTokens: 0, costUSD: 0 };
       }
       summary.byModel[row.model].inputTokens += row.inputTokens;
       summary.byModel[row.model].outputTokens += row.outputTokens;
+      summary.byModel[row.model].cacheReadTokens += row.cacheReadTokens;
       summary.byModel[row.model].totalTokens += row.totalTokens;
       summary.byModel[row.model].costUSD += row.costUSD || 0;
     }
-
-    // Get session/message counts
-    let countQuery = 'SELECT COUNT(DISTINCT session_id) as sessions FROM usage_records WHERE 1=1';
-    const countParams: any[] = [];
-    if (startDate) { countQuery += ' AND usage_date >= ?'; countParams.push(startDate); }
-    if (endDate) { countQuery += ' AND usage_date <= ?'; countParams.push(endDate); }
-    const countRow = this.sqlite.prepare(countQuery).get(...countParams) as any;
-    summary.totalSessions = countRow?.sessions ?? 0;
 
     return summary;
   }
 
   getDailyUsage(startDate?: string, endDate?: string, source?: Source): DailyUsage[] {
-    let query = 'SELECT * FROM daily_usage WHERE 1=1';
+    let query = `
+      SELECT
+        date,
+        source,
+        LOWER(model) as model,
+        SUM(input_tokens) as input_tokens,
+        SUM(output_tokens) as output_tokens,
+        SUM(cache_read_tokens) as cache_read_tokens,
+        SUM(total_tokens) as total_tokens,
+        SUM(cost_usd) as cost_usd,
+        SUM(message_count) as message_count,
+        SUM(session_count) as session_count,
+        SUM(tool_call_count) as tool_call_count
+      FROM daily_usage
+      WHERE 1=1
+    `;
     const params: any[] = [];
     if (startDate) { query += ' AND date >= ?'; params.push(startDate); }
     if (endDate) { query += ' AND date <= ?'; params.push(endDate); }
     if (source) { query += ' AND source = ?'; params.push(source); }
-    query += ' ORDER BY date DESC';
+    query += ' GROUP BY date, source, LOWER(model) ORDER BY date DESC, total_tokens DESC';
 
     const rows = this.sqlite.prepare(query).all(...params) as any[];
     return rows.map(r => ({

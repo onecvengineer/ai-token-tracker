@@ -1,6 +1,8 @@
-# AI Token Tracker (att)
+# AI Token Tracker (`att`)
 
-统一追踪 Claude Code、Codex、Hermes 的 Token 用量，提供模型切换、多账号管理和实时额度查询。
+统一追踪 Claude Code、Codex、Hermes 的 Token 用量，提供实时额度查询、多账号管理和模型切换。
+
+命令按任务组织，而不是按内部模块组织。
 
 ## 快速开始
 
@@ -11,10 +13,13 @@ pnpm install && pnpm -r build
 # 同步数据
 att sync
 
-# 查看用量
-att usage show --preset 7d
+# 查看用量汇总
+att usage --preset 7d
 
-# 查看所有账号额度
+# 查看账号
+att accounts
+
+# 查看所有来源的实时额度
 att balance
 ```
 
@@ -37,7 +42,7 @@ pnpm --filter @att/web build
 ln -sf /home/haibare/project/ai-token-tracker/packages/cli/dist/index.js ~/.local/bin/att
 ```
 
-## 全部命令参考
+## 命令参考
 
 ### 数据同步
 
@@ -54,87 +59,94 @@ att sync
 ### 用量查看
 
 ```bash
-att usage show                          # 全部
-att usage show --preset today           # 今天
-att usage show --preset 7d              # 最近 7 天
-att usage show --preset 30d             # 最近 30 天
-att usage show --preset this_month      # 本月
-att usage show --start 2026-04-01 --end 2026-04-15
+att usage                                # 汇总
+att usage --preset today                 # 今天
+att usage --preset 7d                    # 最近 7 天
+att usage --preset 30d                   # 最近 30 天
+att usage --preset this_month            # 本月
+att usage --start 2026-04-01 --end 2026-04-15
 
 # 按来源筛选
-att usage show --preset 7d --source claude-code
-att usage show --preset 7d --source codex
+att usage --preset 7d --source claude-code
+att usage --preset 7d --source codex
 
 # 每日明细
 att usage daily --preset 7d
+att usage daily --preset 7d --source codex
 
 # 导出
 att usage export -f json
-att usage export -f csv --start 2026-04-01
+att usage export -f csv --preset 30d --source claude-code
 ```
 
-### 账号额度查询
+### 账号管理
 
 ```bash
-# 查看所有工具的账号状态和实时额度
-att balance
-```
+# 查看所有来源账号
+att accounts
 
-展示内容：
-- Claude Code：智谱账号 Plan、剩余额度百分比、刷新时间
-- Codex：所有账号的 5h/7d 窗口额度、刷新时间、活跃状态
-- Hermes：账号状态
+# 只看 Codex
+att accounts --source codex
 
-### Claude Code 模型配置
+# 切换 Codex 账号
+att accounts switch <账号名> --source codex
 
-```bash
-att config claude list-models
-
-# 重置为默认模型
-att config claude set-model sonnet
-att config claude set-model opus
-att config claude set-model haiku
-
-# 设置自定义模型
-att config claude set-model glm-5.0 --tier sonnet
-att config claude set-model glm-5.0 --tier opus
-```
-
-### Codex 多账号管理
-
-```bash
-# 列出所有账号（含实时额度）
-att config codex accounts list
-
-# 重命名账号
-att config codex accounts rename <旧名> <新名>
-
-# 切换账号
-att config codex accounts switch <账号名>
-
-# 添加账号
-att config codex accounts add <账号名> \
+# 添加 Codex 账号
+att accounts add <账号名> \
+  --source codex \
   --access-token "eyJ..." \
   --id-token "eyJ..." \
   --refresh-token "eyJ..."
 
-# 验证账号
-att config codex accounts verify <账号名>
-
-# 删除账号
-att config codex accounts remove <账号名>
+# 验证 / 重命名 / 删除
+att accounts verify <账号名> --source codex
+att accounts rename <旧名> <新名> --source codex
+att accounts remove <账号名> --source codex
 ```
 
-**自动检测新账号**：运行 `codex login` 登录新账号后，执行 `att config codex accounts list` 会自动识别并添加新账号（通过 email 匹配）。
+当前写操作支持：
 
-账号数据存储：
-- `~/.codex/accounts.json` — 所有账号
-- `~/.codex/auth.json` — 当前激活账号
+- `codex`：支持多账号查看、切换、增删改、验证
+- `claude-code`：当前只展示账号/额度状态
+- `hermes`：当前只展示账号/额度状态
+
+### 额度总览
+
+```bash
+att balance
+```
+
+展示内容：
+
+- Claude Code：智谱账号 Plan、剩余额度百分比、刷新时间
+- Codex：所有账号的 5h / 7d 窗口额度、刷新时间、活跃状态
+- Hermes：账号状态
+
+### 模型管理
+
+```bash
+# 列出当前支持的模型来源
+att model
+att model list --source claude-code
+
+# 重置为默认模型
+att model set sonnet --source claude-code
+att model set opus --source claude-code
+att model set haiku --source claude-code
+
+# 设置自定义模型
+att model set glm-5.0 --source claude-code --tier sonnet
+att model set glm-5.0 --source claude-code --tier opus
+```
+
+当前模型写操作支持：
+
+- `claude-code`
 
 ### 启动 API 服务
 
 ```bash
-att serve              # 默认端口 3456
+att serve
 att serve --port 8080
 ```
 
@@ -144,24 +156,6 @@ att serve --port 8080
 att serve &
 cd packages/web && pnpm dev
 # 浏览器访问 http://localhost:3457
-```
-
-## 项目结构
-
-```
-ai-token-tracker/
-├── packages/
-│   ├── core/           # 核心库
-│   │   └── src/
-│   │       ├── collectors/    # 数据采集
-│   │       ├── db/            # SQLite 存储 (Drizzle ORM)
-│   │       ├── config/        # 配置管理（模型切换、多账号）
-│   │       └── balance/       # 实时额度查询
-│   ├── api/            # Hono REST API (端口 3456)
-│   ├── cli/            # Commander.js CLI (att)
-│   └── web/            # Next.js 前端 (端口 3457)
-├── pnpm-workspace.yaml
-└── turbo.json
 ```
 
 ## 数据存储
@@ -176,7 +170,7 @@ ai-token-tracker/
 
 ## 技术要点
 
-- **智谱 API 集成**：自动检测 `~/.claude/settings.json` 中的智谱代理配置，查询用量配额和历史 token 数据
-- **Codex 实时额度**：通过 ChatGPT backend API 获取实时 rate limits，支持 HTTPS_PROXY 代理
-- **多账号自动检测**：基于 JWT email 匹配，自动识别 `codex login` 后的新账号
-- **并行余额查询**：三个数据源并行请求，Codex 多账号串行查询避免代理冲突
+- 智谱 API 集成：自动检测 `~/.claude/settings.json` 中的智谱代理配置，查询用量配额和历史 token 数据
+- Codex 实时额度：通过 ChatGPT backend API 获取实时 rate limits，支持 `HTTPS_PROXY`
+- 多账号自动检测：基于 JWT email 匹配，自动识别 `codex login` 后的新账号
+- 实时并发额度查询：Codex 多账号走受控并发和超时控制，避免串行拖慢 CLI
