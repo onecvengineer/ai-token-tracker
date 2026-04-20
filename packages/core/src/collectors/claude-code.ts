@@ -302,6 +302,18 @@ export class ClaudeCodeCollector implements ICollector {
     const config = await this.getZhipuConfig();
     if (!config) return null;
 
+    // Load modelUsage from stats-cache for ratio-based breakdown allocation
+    const modelUsageByName = new Map<string, ModelUsage>();
+    if (existsSync(this.statsPath)) {
+      try {
+        const raw = await readFile(this.statsPath, 'utf-8');
+        const stats: StatsCache = JSON.parse(raw);
+        for (const [model, usage] of Object.entries(stats.modelUsage)) {
+          modelUsageByName.set(normalizeModel(model), usage);
+        }
+      } catch {}
+    }
+
     // Query last 30 days of data (API seems to support up to ~48 hours in one call,
     // so we make multiple calls to cover the range)
     const records: UsageRecord[] = [];
@@ -342,13 +354,15 @@ export class ClaudeCodeCollector implements ICollector {
         for (const [key, agg] of dailyAgg) {
           const [date, model] = key.split('|');
           const duKey = `${date}-${model}`;
+          const modelUsage = modelUsageByName.get(model);
+          const breakdown = allocateByRatio(agg.tokens, modelUsage);
           const dailyEntry: DailyUsage = {
             date,
             source: 'claude-code',
             model,
-            inputTokens: 0, // Zhipu API only gives total tokens
-            outputTokens: 0,
-            cacheReadTokens: 0,
+            inputTokens: breakdown.inputTokens,
+            outputTokens: breakdown.outputTokens,
+            cacheReadTokens: breakdown.cacheReadTokens,
             totalTokens: agg.tokens,
             costUSD: null,
             messageCount: 0,
