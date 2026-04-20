@@ -47,8 +47,8 @@ export async function listAccounts(options?: {
     const [configAccounts, codexStatuses] = await Promise.all([
       codexConfig.listAccounts(),
       getCodexAccountStatuses({
-        concurrency: options?.concurrency ?? 2,
-        timeoutMs: options?.timeoutMs ?? 4000,
+        concurrency: options?.concurrency,
+        timeoutMs: options?.timeoutMs,
       }),
     ]);
     const codexStatusesById = new Map(codexStatuses.map((account) => [account.id, account]));

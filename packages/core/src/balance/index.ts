@@ -61,6 +61,10 @@ interface DecodedJWT {
   };
 }
 
+const DEFAULT_CODEX_RATE_LIMIT_CONCURRENCY = 1;
+const DEFAULT_CODEX_RATE_LIMIT_TIMEOUT_MS = 8000;
+const DEFAULT_CODEX_RATE_LIMIT_RETRIES = 1;
+
 function decodeJWT(token: string | undefined): DecodedJWT {
   if (!token) return {};
   try {
@@ -383,12 +387,17 @@ function proxiedHttpsGet(urlStr: string, headers: Record<string, string>, timeou
 export async function getCodexAccountStatuses(options?: {
   concurrency?: number;
   timeoutMs?: number;
+  retries?: number;
 }): Promise<CodexAccountStatus[]> {
   const authRows = await loadCodexAccountAuthRows();
+  const concurrency = options?.concurrency ?? DEFAULT_CODEX_RATE_LIMIT_CONCURRENCY;
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_CODEX_RATE_LIMIT_TIMEOUT_MS;
+  const retries = options?.retries ?? DEFAULT_CODEX_RATE_LIMIT_RETRIES;
 
-  return mapWithConcurrency(authRows, options?.concurrency ?? 2, async (row) => {
-    const rateLimits = await fetchCodexRateLimits(row.accessToken, row.idToken, {
-      timeoutMs: options?.timeoutMs ?? 4000,
+  return mapWithConcurrency(authRows, concurrency, async (row) => {
+    const rateLimits = await fetchCodexRateLimitsWithRetry(row.accessToken, row.idToken, {
+      timeoutMs,
+      retries,
     });
 
     return {
@@ -402,6 +411,25 @@ export async function getCodexAccountStatuses(options?: {
       rateLimits,
     };
   });
+}
+
+async function fetchCodexRateLimitsWithRetry(
+  accessToken: string | undefined,
+  idToken: string | undefined,
+  options?: { timeoutMs?: number; retries?: number },
+): Promise<BalanceResult['rateLimits']> {
+  const retries = Math.max(options?.retries ?? DEFAULT_CODEX_RATE_LIMIT_RETRIES, 0);
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const rateLimits = await fetchCodexRateLimits(accessToken, idToken, {
+      timeoutMs: options?.timeoutMs ?? DEFAULT_CODEX_RATE_LIMIT_TIMEOUT_MS,
+    });
+    if (rateLimits) {
+      return rateLimits;
+    }
+  }
+
+  return undefined;
 }
 
 export async function fetchCodexRateLimits(

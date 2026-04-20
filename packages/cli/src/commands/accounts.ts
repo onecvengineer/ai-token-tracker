@@ -7,8 +7,6 @@ import { formatRateLimit, formatStatus, parseSource, printEmptyState, withErrorH
 async function renderAccountsList(opts: { source?: string }): Promise<void> {
   const result = await listAccounts({
     source: parseSource(opts.source),
-    concurrency: 2,
-    timeoutMs: 4000,
   });
 
   for (const notice of result.notices) {
