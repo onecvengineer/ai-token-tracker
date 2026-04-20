@@ -1,23 +1,70 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { AUTO_SYNC_INTERVAL_MS, fetchAPI, triggerSync } from '../../lib/api';
 
 interface ModelData {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
-  costUSD: number;
 }
 
 export default function ModelsPage() {
   const [models, setModels] = useState<Record<string, ModelData> | null>(null);
   const [loading, setLoading] = useState(true);
+  const syncInFlightRef = useRef(false);
 
   useEffect(() => {
-    fetch('http://localhost:3456/api/usage/by-model')
-      .then(r => r.json())
-      .then(d => { setModels(d); setLoading(false); })
-      .catch(() => setLoading(false));
+    let cancelled = false;
+
+    async function loadModels() {
+      setLoading(true);
+      try {
+        const modelData = await fetchAPI<Record<string, ModelData>>('/api/usage/by-model');
+        if (!cancelled) {
+          setModels(modelData);
+          setLoading(false);
+        }
+      } catch {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    void loadModels();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function syncAndRefresh() {
+      if (syncInFlightRef.current) return;
+      syncInFlightRef.current = true;
+      try {
+        await triggerSync().catch(() => undefined);
+        const modelData = await fetchAPI<Record<string, ModelData>>('/api/usage/by-model');
+        if (!cancelled) {
+          setModels(modelData);
+        }
+      } finally {
+        syncInFlightRef.current = false;
+      }
+    }
+
+    void syncAndRefresh();
+    const interval = setInterval(() => {
+      void syncAndRefresh();
+    }, AUTO_SYNC_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, []);
 
   if (loading) return <div className="text-neutral-500">Loading...</div>;
@@ -52,7 +99,6 @@ export default function ModelsPage() {
             <div className="flex gap-6 text-sm text-neutral-500">
               <span>Input: {fmt(data.inputTokens)}</span>
               <span>Output: {fmt(data.outputTokens)}</span>
-              <span>Cost: ${data.costUSD.toFixed(2)}</span>
             </div>
           </div>
         ))}

@@ -6,6 +6,7 @@
   "scripts": {
     "build": "turbo build",
     "dev": "turbo dev",
+    "web": "node packages/cli/dist/index.js web",
     "lint": "turbo lint",
     "type-check": "turbo type-check"
   },

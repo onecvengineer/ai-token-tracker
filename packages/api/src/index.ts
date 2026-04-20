@@ -194,7 +194,7 @@ app.get('/api/sync/state', (c) => {
 const PORT = parseInt(process.env.ATT_PORT || '3456');
 
 export function startServer() {
-  serve({ fetch: app.fetch, port: PORT }, (info) => {
+  return serve({ fetch: app.fetch, port: PORT }, (info) => {
     console.log(`ATT API Server running at http://localhost:${info.port}`);
   });
 }

@@ -2,6 +2,8 @@
 
 统一追踪 Claude Code、Codex、Hermes 的 Token 用量，提供实时额度查询、多账号管理和模型切换。
 
+当前 Web 前端聚焦 Token 用量与多 agent 状态展示；由于 `cost` / `balance` 暂无稳定数据源，前端暂不展示这两类统计。
+
 命令按任务组织，而不是按内部模块组织。
 
 ## 快速开始
@@ -153,10 +155,32 @@ att serve --port 8080
 ### 启动 Web 前端
 
 ```bash
+# 一条命令启动 API + Web
+att web
+att serve --web
+
+# 后台常驻
+att web --detach
+att web stop
+
+# 仓库内也可以直接用脚本入口
+pnpm web
+
+# 或者分开启动
 att serve &
 cd packages/web && pnpm dev
 # 浏览器访问 http://localhost:3457
 ```
+
+说明：
+
+- `att web`：前台启动 API 和 Web，按 `Ctrl+C` 一起退出
+- `att web --detach`：后台常驻启动 API 和 Web
+- `att web stop`：停止后台常驻的 API 和 Web
+- `att serve`：只启动 API
+- `att serve --web`：等价于 `att web`
+- 用量页会在首次进入时自动触发一次 `/api/sync`，之后每 60 秒自动同步一次
+- 切换 Dashboard / Daily 的时间范围时只刷新视图数据，不会额外触发一次同步
 
 ## 数据存储
 
@@ -174,3 +198,5 @@ cd packages/web && pnpm dev
 - Codex 实时额度：通过 ChatGPT backend API 获取实时 rate limits，支持 `HTTPS_PROXY`
 - 多账号自动检测：基于 JWT email 匹配，自动识别 `codex login` 后的新账号
 - 实时并发额度查询：Codex 多账号走受控并发和超时控制，避免串行拖慢 CLI
+- Web 展示范围：当前只展示 Token 用量统计和 agent 状态，不展示 `cost` / `balance`
+- Accounts 页：展示 `claude-code` / `codex` / `hermes` 状态；Codex 卡片会显示账号别名、Plan、Limit、刷新时间，并支持直接切换账号

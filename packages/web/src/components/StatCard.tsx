@@ -1,50 +1,82 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { AUTO_SYNC_INTERVAL_MS, fetchAPI, triggerSync } from '../lib/api';
 
 interface Summary {
   totalInputTokens: number;
   totalOutputTokens: number;
   totalCacheReadTokens: number;
   totalTokens: number;
-  totalCostUSD: number;
   totalSessions: number;
-  bySource: Record<string, { inputTokens: number; outputTokens: number; totalTokens: number; costUSD: number }>;
-  byModel: Record<string, { inputTokens: number; outputTokens: number; totalTokens: number; costUSD: number }>;
-}
-
-interface Balance {
-  source: string;
-  accountName: string;
-  balance: number | null;
-  balanceUnit: string;
-  status: string;
+  bySource: Record<string, { inputTokens: number; outputTokens: number; totalTokens: number }>;
+  byModel: Record<string, { inputTokens: number; outputTokens: number; totalTokens: number }>;
 }
 
 export default function Dashboard() {
   const [summary, setSummary] = useState<Summary | null>(null);
-  const [balances, setBalances] = useState<Balance[]>([]);
   const [loading, setLoading] = useState(true);
-  const [preset, setPreset] = useState('30d');
+  const [preset, setPreset] = useState('today');
+  const syncInFlightRef = useRef(false);
+  const presetRef = useRef(preset);
 
   useEffect(() => {
-    async function load() {
+    presetRef.current = preset;
+  }, [preset]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSummary() {
       setLoading(true);
       try {
-        const [s, b] = await Promise.all([
-          fetch(`http://localhost:3456/api/usage/summary?preset=${preset}`).then(r => r.json()),
-          fetch('http://localhost:3456/api/accounts/balance').then(r => r.json()),
-        ]);
-        setSummary(s);
-        setBalances(b);
+        const s = await fetchAPI<Summary>(`/api/usage/summary?preset=${preset}`);
+        if (!cancelled) {
+          setSummary(s);
+        }
       } catch (err) {
         console.error(err);
       } finally {
-        setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+        }
       }
     }
-    load();
+
+    void loadSummary();
+
+    return () => {
+      cancelled = true;
+    };
   }, [preset]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function syncAndRefresh() {
+      if (syncInFlightRef.current) return;
+      syncInFlightRef.current = true;
+      try {
+        await triggerSync().catch(() => undefined);
+        const s = await fetchAPI<Summary>(`/api/usage/summary?preset=${presetRef.current}`);
+        if (!cancelled) {
+          setSummary(s);
+        }
+      } finally {
+        syncInFlightRef.current = false;
+      }
+    }
+
+    void syncAndRefresh();
+    const interval = setInterval(() => {
+      void syncAndRefresh();
+    }, AUTO_SYNC_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
 
   if (loading) return <div className="text-neutral-500">Loading...</div>;
   if (!summary) return <div className="text-red-400">No data. Make sure the API server is running.</div>;
@@ -76,12 +108,11 @@ export default function Dashboard() {
       </div>
 
       {/* Overview cards */}
-      <div className="grid grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-3 gap-4 mb-8">
         {[
           { label: 'Total Tokens', value: fmt(summary.totalTokens) },
           { label: 'Input Tokens', value: fmt(summary.totalInputTokens) },
           { label: 'Output Tokens', value: fmt(summary.totalOutputTokens) },
-          { label: 'Cost', value: `$${summary.totalCostUSD.toFixed(2)}` },
         ].map(card => (
           <div key={card.label} className="bg-neutral-900 border border-neutral-800 rounded-xl p-5">
             <div className="text-sm text-neutral-500 mb-1">{card.label}</div>
@@ -109,7 +140,6 @@ export default function Dashboard() {
               <div className="grid grid-cols-2 gap-2 text-sm text-neutral-400">
                 <div>In: {fmt(data.inputTokens)}</div>
                 <div>Out: {fmt(data.outputTokens)}</div>
-                <div>Cost: ${data.costUSD.toFixed(2)}</div>
               </div>
             </div>
           );
@@ -136,23 +166,6 @@ export default function Dashboard() {
               </div>
             );
           })}
-      </div>
-
-      {/* Account Status */}
-      <h2 className="text-lg font-semibold mb-4">Account Status</h2>
-      <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-5">
-        {balances.map(b => (
-          <div key={b.source} className="flex items-center justify-between py-2 border-b border-neutral-800 last:border-0">
-            <div className="flex items-center gap-3">
-              <div className={`w-2 h-2 rounded-full ${b.status === 'active' ? 'bg-green-500' : 'bg-yellow-500'}`} />
-              <span className="font-medium">{b.source}</span>
-              <span className="text-sm text-neutral-500">{b.accountName}</span>
-            </div>
-            <span className={`text-sm ${b.status === 'active' ? 'text-green-400' : 'text-yellow-400'}`}>
-              {b.status}
-            </span>
-          </div>
-        ))}
       </div>
     </div>
   );

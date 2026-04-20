@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { AUTO_SYNC_INTERVAL_MS, fetchAPI, triggerSync } from '../../lib/api';
 
 interface DailyUsage {
   date: string;
@@ -20,13 +21,65 @@ export default function DailyPage() {
   const [data, setData] = useState<DailyUsage[]>([]);
   const [loading, setLoading] = useState(true);
   const [preset, setPreset] = useState('30d');
+  const syncInFlightRef = useRef(false);
+  const presetRef = useRef(preset);
 
   useEffect(() => {
-    fetch(`http://localhost:3456/api/usage/daily?preset=${preset}`)
-      .then(r => r.json())
-      .then(d => { setData(d); setLoading(false); })
-      .catch(() => setLoading(false));
+    presetRef.current = preset;
   }, [preset]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadDaily() {
+      setLoading(true);
+      try {
+        const dailyData = await fetchAPI<DailyUsage[]>(`/api/usage/daily?preset=${preset}`);
+        if (!cancelled) {
+          setData(dailyData);
+          setLoading(false);
+        }
+      } catch {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    void loadDaily();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [preset]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function syncAndRefresh() {
+      if (syncInFlightRef.current) return;
+      syncInFlightRef.current = true;
+      try {
+        await triggerSync().catch(() => undefined);
+        const dailyData = await fetchAPI<DailyUsage[]>(`/api/usage/daily?preset=${presetRef.current}`);
+        if (!cancelled) {
+          setData(dailyData);
+        }
+      } finally {
+        syncInFlightRef.current = false;
+      }
+    }
+
+    void syncAndRefresh();
+    const interval = setInterval(() => {
+      void syncAndRefresh();
+    }, AUTO_SYNC_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
 
   if (loading) return <div className="text-neutral-500">Loading...</div>;
 
