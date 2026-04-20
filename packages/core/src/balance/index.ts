@@ -61,9 +61,10 @@ interface DecodedJWT {
   };
 }
 
-const DEFAULT_CODEX_RATE_LIMIT_CONCURRENCY = 1;
+const DEFAULT_CODEX_RATE_LIMIT_CONCURRENCY = 2;
 const DEFAULT_CODEX_RATE_LIMIT_TIMEOUT_MS = 8000;
 const DEFAULT_CODEX_RATE_LIMIT_RETRIES = 1;
+const DEFAULT_CODEX_RATE_LIMIT_FALLBACK_TIMEOUT_MS = 12000;
 
 function decodeJWT(token: string | undefined): DecodedJWT {
   if (!token) return {};
@@ -393,13 +394,29 @@ export async function getCodexAccountStatuses(options?: {
   const concurrency = options?.concurrency ?? DEFAULT_CODEX_RATE_LIMIT_CONCURRENCY;
   const timeoutMs = options?.timeoutMs ?? DEFAULT_CODEX_RATE_LIMIT_TIMEOUT_MS;
   const retries = options?.retries ?? DEFAULT_CODEX_RATE_LIMIT_RETRIES;
+  const rateLimitsByAccountId = new Map<string, BalanceResult['rateLimits']>();
 
-  return mapWithConcurrency(authRows, concurrency, async (row) => {
+  await mapWithConcurrency(authRows, concurrency, async (row) => {
     const rateLimits = await fetchCodexRateLimitsWithRetry(row.accessToken, row.idToken, {
       timeoutMs,
       retries,
     });
+    rateLimitsByAccountId.set(row.id, rateLimits);
+  });
 
+  if (concurrency > 1) {
+    for (const row of authRows) {
+      if (!row.accessToken || rateLimitsByAccountId.get(row.id)) continue;
+      const rateLimits = await fetchCodexRateLimitsWithRetry(row.accessToken, row.idToken, {
+        timeoutMs: Math.max(timeoutMs, DEFAULT_CODEX_RATE_LIMIT_FALLBACK_TIMEOUT_MS),
+        retries,
+      });
+      rateLimitsByAccountId.set(row.id, rateLimits);
+    }
+  }
+
+  return authRows.map((row) => {
+    const rateLimits = rateLimitsByAccountId.get(row.id);
     return {
       id: row.id,
       name: row.name,
