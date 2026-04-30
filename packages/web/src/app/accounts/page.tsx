@@ -1,6 +1,8 @@
 'use client';
 
+import { CheckCircle2, Gauge, KeyRound, RefreshCw, Repeat2, Server, ShieldAlert, UserRound } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { fetchAPI } from '../../lib/api';
 
 interface BalanceRateLimits {
   planType: string | null;
@@ -51,14 +53,14 @@ function formatRateLimit(rateLimits: BalanceRateLimits | undefined): RateLimitIt
   if (rateLimits.primaryUsedPercent != null) {
     parts.push({
       label: '5h',
-      remainingPercent: 100 - rateLimits.primaryUsedPercent,
+      remainingPercent: Math.max(0, Math.min(100, 100 - rateLimits.primaryUsedPercent)),
       resetAt: rateLimits.primaryResetAfter != null ? formatResetTime(rateLimits.primaryResetAfter) : undefined,
     });
   }
   if (rateLimits.secondaryUsedPercent != null) {
     parts.push({
       label: '7d',
-      remainingPercent: 100 - rateLimits.secondaryUsedPercent,
+      remainingPercent: Math.max(0, Math.min(100, 100 - rateLimits.secondaryUsedPercent)),
       resetAt: rateLimits.secondaryResetAfter != null ? formatResetTime(rateLimits.secondaryResetAfter) : undefined,
     });
   }
@@ -70,6 +72,15 @@ function getCodexAlias(balance: AgentBalance, codexAccounts: CodexAccount[]): st
   return codexAccounts.find((account) => account.email === balance.accountName)?.name ?? null;
 }
 
+function formatStatus(status: AgentBalance['status']): string {
+  const labels: Record<AgentBalance['status'], string> = {
+    active: '使用中',
+    inactive: '未启用',
+    unknown: '未知',
+  };
+  return labels[status];
+}
+
 export default function AccountsPage() {
   const [balances, setBalances] = useState<AgentBalance[]>([]);
   const [codexAccounts, setCodexAccounts] = useState<CodexAccount[]>([]);
@@ -77,8 +88,8 @@ export default function AccountsPage() {
 
   const loadData = async () => {
     const [balanceData, codexData] = await Promise.all([
-      fetch('http://localhost:3456/api/accounts/balance').then(r => r.json()),
-      fetch('http://localhost:3456/api/config/codex/accounts').then(r => r.json()).catch(() => []),
+      fetchAPI<AgentBalance[]>('/api/accounts/balance'),
+      fetchAPI<CodexAccount[]>('/api/config/codex/accounts').catch(() => [] as CodexAccount[]),
     ]);
     setBalances(balanceData);
     setCodexAccounts(codexData);
@@ -93,7 +104,7 @@ export default function AccountsPage() {
   }, []);
 
   const switchAccount = async (name: string) => {
-    await fetch('http://localhost:3456/api/config/codex/accounts/switch', {
+    await fetchAPI('/api/config/codex/accounts/switch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
@@ -101,86 +112,136 @@ export default function AccountsPage() {
     await loadData();
   };
 
-  if (loading) return <div className="text-neutral-500">Loading...</div>;
+  if (loading) {
+    return (
+      <div className="app-panel flex min-h-[320px] items-center justify-center rounded-lg">
+        <div className="flex items-center gap-3 text-sm text-[#9ba8a0]">
+          <RefreshCw className="h-4 w-4 animate-spin text-[#62c7c9]" />
+          正在检查账号状态
+        </div>
+      </div>
+    );
+  }
+
+  const activeCount = balances.filter((balance) => balance.status === 'active').length;
+  const subscriptionCount = balances.filter((balance) => !!balance.rateLimits?.planType || formatRateLimit(balance.rateLimits).length > 0).length;
 
   return (
-    <div>
-      <h2 className="text-lg font-semibold mb-4">Agent Status</h2>
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-8">
+    <div className="space-y-6">
+      <section className="app-panel-strong rounded-lg p-5 sm:p-6">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-[#86b86f]/25 bg-[#86b86f]/10 px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] text-[#add49b]">
+              <KeyRound className="h-3.5 w-3.5" />
+              账号矩阵
+            </div>
+            <h2 className="text-3xl font-semibold tracking-tight text-[#fff9ea]">账号状态</h2>
+          </div>
+          <div className="grid grid-cols-2 gap-3 sm:min-w-80">
+            <div className="rounded-lg border border-white/10 bg-black/[0.18] p-4">
+              <div className="text-xs uppercase tracking-[0.14em] text-[#798780]">使用中</div>
+              <div className="tabular mt-2 text-2xl font-semibold text-[#fff9ea]">{activeCount}/{balances.length}</div>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-black/[0.18] p-4">
+              <div className="text-xs uppercase tracking-[0.14em] text-[#798780]">有限额</div>
+              <div className="tabular mt-2 text-2xl font-semibold text-[#fff9ea]">{subscriptionCount}</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
         {balances.map((balance, index) => {
           const rateLimitLines = formatRateLimit(balance.rateLimits);
           const hasSubscription = !!balance.rateLimits?.planType || rateLimitLines.length > 0;
           const codexAlias = getCodexAlias(balance, codexAccounts);
           const canSwitch = balance.source === 'codex' && !!codexAlias && balance.status !== 'active';
+          const statusStyles = {
+            active: {
+              dot: 'bg-[#86b86f]',
+              badge: 'border-[#86b86f]/30 bg-[#86b86f]/10 text-[#b7dda8]',
+              icon: CheckCircle2,
+            },
+            inactive: {
+              dot: 'bg-[#7f8d86]',
+              badge: 'border-white/10 bg-white/[0.04] text-[#9ba8a0]',
+              icon: Server,
+            },
+            unknown: {
+              dot: 'bg-[#d5a348]',
+              badge: 'border-[#d5a348]/30 bg-[#d5a348]/10 text-[#f0bf5d]',
+              icon: ShieldAlert,
+            },
+          }[balance.status];
+          const StatusIcon = statusStyles.icon;
 
           return (
-            <div key={getBalanceKey(balance, index)} className="bg-neutral-900 border border-neutral-800 rounded-xl p-5">
-              <div className="flex items-start justify-between gap-3 mb-4">
-                <div className="flex items-center gap-2">
-                  <div className={`w-2.5 h-2.5 rounded-full ${
-                    balance.status === 'active' ? 'bg-green-500' :
-                    balance.status === 'inactive' ? 'bg-neutral-500' :
-                    'bg-yellow-500'
-                  }`} />
-                  <span className="font-medium">{balance.source}</span>
+            <div key={getBalanceKey(balance, index)} className="app-panel flex min-h-full flex-col rounded-lg p-5">
+              <div className="mb-5 flex items-start justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className={`h-2.5 w-2.5 shrink-0 rounded-full ${statusStyles.dot} shadow-[0_0_18px_currentColor]`} />
+                  <div className="min-w-0">
+                    <div className="truncate font-semibold text-[#fff9ea]">{balance.source}</div>
+                    <div className="truncate text-xs text-[#7f8d86]">{balance.accountName}</div>
+                  </div>
                 </div>
-                <span className={`text-xs px-2 py-1 rounded-full ${
-                  balance.status === 'active' ? 'bg-green-900/30 text-green-400' :
-                  balance.status === 'inactive' ? 'bg-neutral-800 text-neutral-400' :
-                  'bg-yellow-900/30 text-yellow-400'
-                }`}>
-                  {balance.status.toUpperCase()}
+                <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${statusStyles.badge}`}>
+                  <StatusIcon className="h-3.5 w-3.5" />
+                  {formatStatus(balance.status)}
                 </span>
               </div>
 
-              <div className="space-y-2 text-sm">
+              <div className="flex-1 space-y-2 text-sm">
                 {codexAlias && (
-                  <div className="flex justify-between gap-4">
-                    <span className="text-neutral-500">Alias</span>
-                    <span className="text-neutral-200">{codexAlias}</span>
+                  <div className="flex items-center justify-between gap-4 rounded-md bg-black/[0.16] px-3 py-2">
+                    <span className="inline-flex items-center gap-2 text-[#7f8d86]"><UserRound className="h-3.5 w-3.5" />别名</span>
+                    <span className="truncate text-[#f4f1e8]">{codexAlias}</span>
                   </div>
                 )}
 
-                <div className="flex justify-between gap-4">
-                  <span className="text-neutral-500">Account</span>
-                  <span className="text-neutral-300">{balance.accountName}</span>
+                <div className="flex items-center justify-between gap-4 rounded-md bg-black/[0.16] px-3 py-2">
+                  <span className="text-[#7f8d86]">账号</span>
+                  <span className="min-w-0 truncate text-right text-[#d8cfb7]">{balance.accountName}</span>
                 </div>
 
-                <div className="flex justify-between gap-4">
-                  <span className="text-neutral-500">Model</span>
-                  <span className="text-neutral-200">{balance.model}</span>
+                <div className="flex items-center justify-between gap-4 rounded-md bg-black/[0.16] px-3 py-2">
+                  <span className="text-[#7f8d86]">模型</span>
+                  <span className="min-w-0 truncate text-right text-[#f4f1e8]">{balance.model}</span>
                 </div>
 
                 {balance.rateLimits?.planType && (
-                  <div className="flex justify-between gap-4">
-                    <span className="text-neutral-500">Plan</span>
-                    <span className="text-cyan-300">{balance.rateLimits.planType}</span>
+                  <div className="flex items-center justify-between gap-4 rounded-md bg-[#62c7c9]/[0.08] px-3 py-2">
+                    <span className="text-[#7f8d86]">套餐</span>
+                    <span className="text-[#8fdadd]">{balance.rateLimits.planType}</span>
                   </div>
                 )}
 
                 {hasSubscription && rateLimitLines.length > 0 && (
-                  <div className="pt-2 border-t border-neutral-800">
-                    <div className="text-neutral-500 mb-2">Limit</div>
-                    <div className="space-y-2 text-neutral-200">
+                  <div className="border-t border-white/10 pt-3">
+                    <div className="mb-2 inline-flex items-center gap-2 text-[#7f8d86]">
+                      <Gauge className="h-3.5 w-3.5" />
+                      额度
+                    </div>
+                    <div className="space-y-2 text-[#d8cfb7]">
                       {rateLimitLines.map((item) => (
-                        <div key={item.label} className="rounded-lg bg-neutral-800/40 px-3 py-2">
+                        <div key={item.label} className="rounded-lg border border-white/10 bg-black/[0.18] px-3 py-2">
                           <div className="flex items-center justify-between gap-4">
                             <span>{item.label}</span>
-                            <span>{item.remainingPercent}%</span>
+                            <span className="tabular">{item.remainingPercent}%</span>
                           </div>
-                          <div className="mt-2 h-2 rounded-full bg-neutral-800 overflow-hidden">
+                          <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/[0.055]">
                             <div
                               className={`h-full rounded-full ${
-                                item.remainingPercent >= 50 ? 'bg-green-500' :
-                                item.remainingPercent >= 20 ? 'bg-yellow-500' :
-                                'bg-red-500'
+                                item.remainingPercent >= 50 ? 'bg-[#86b86f]' :
+                                item.remainingPercent >= 20 ? 'bg-[#d5a348]' :
+                                'bg-[#ef6b5d]'
                               }`}
                               style={{ width: `${item.remainingPercent}%` }}
                             />
                           </div>
                           {item.resetAt && (
-                            <div className="mt-2 text-sm font-medium text-neutral-300">
-                              Refresh at {item.resetAt}
+                            <div className="mt-2 text-xs font-medium text-[#9ba8a0]">
+                              重置时间 {item.resetAt}
                             </div>
                           )}
                         </div>
@@ -190,12 +251,13 @@ export default function AccountsPage() {
                 )}
 
                 {canSwitch && (
-                  <div className="pt-3 border-t border-neutral-800">
+                  <div className="border-t border-white/10 pt-3">
                     <button
                       onClick={() => switchAccount(codexAlias)}
-                      className="w-full text-sm px-3 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 transition-colors"
+                      className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-[#d5a348]/30 bg-[#d5a348]/10 px-3 py-2 text-sm font-medium text-[#f0bf5d] transition-colors hover:bg-[#d5a348]/[0.16]"
                     >
-                      Switch To This Account
+                      <Repeat2 className="h-4 w-4" />
+                      切换到此账号
                     </button>
                   </div>
                 )}
@@ -204,6 +266,9 @@ export default function AccountsPage() {
           );
         })}
       </div>
+      {balances.length === 0 && (
+        <div className="app-panel rounded-lg p-8 text-center text-sm text-[#9ba8a0]">未检测到账号。</div>
+      )}
     </div>
   );
 }

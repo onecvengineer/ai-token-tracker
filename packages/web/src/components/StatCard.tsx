@@ -1,7 +1,9 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { AUTO_SYNC_INTERVAL_MS, fetchAPI, triggerSync } from '../lib/api';
+import { Activity, ArrowDownToLine, ArrowUpFromLine, Braces, Database, Layers3, RefreshCw, ServerCog } from 'lucide-react';
+import { useEffect, useRef, useState, useCallback } from 'react';
+import { fetchAPI, formatTokens } from '../lib/api';
+import { useAutoSync } from '../lib/useAutoSync';
 
 interface Summary {
   totalInputTokens: number;
@@ -17,7 +19,6 @@ export default function Dashboard() {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [loading, setLoading] = useState(true);
   const [preset, setPreset] = useState('today');
-  const syncInFlightRef = useRef(false);
   const presetRef = useRef(preset);
 
   useEffect(() => {
@@ -50,122 +51,184 @@ export default function Dashboard() {
     };
   }, [preset]);
 
-  useEffect(() => {
-    let cancelled = false;
+  useAutoSync(useCallback(async () => {
+    const s = await fetchAPI<Summary>(`/api/usage/summary?preset=${presetRef.current}`);
+    setSummary(s);
+  }, []));
 
-    async function syncAndRefresh() {
-      if (syncInFlightRef.current) return;
-      syncInFlightRef.current = true;
-      try {
-        await triggerSync().catch(() => undefined);
-        const s = await fetchAPI<Summary>(`/api/usage/summary?preset=${presetRef.current}`);
-        if (!cancelled) {
-          setSummary(s);
-        }
-      } finally {
-        syncInFlightRef.current = false;
-      }
-    }
+  const presets = [
+    { key: 'today', label: '今天' },
+    { key: '7d', label: '7日' },
+    { key: '30d', label: '30日' },
+    { key: 'this_month', label: '本月' },
+  ];
 
-    void syncAndRefresh();
-    const interval = setInterval(() => {
-      void syncAndRefresh();
-    }, AUTO_SYNC_INTERVAL_MS);
+  if (loading) {
+    return (
+      <div className="app-panel flex min-h-[360px] items-center justify-center rounded-lg">
+        <div className="flex items-center gap-3 text-sm text-[#9ba8a0]">
+          <RefreshCw className="h-4 w-4 animate-spin text-[#62c7c9]" />
+          正在加载用量数据
+        </div>
+      </div>
+    );
+  }
 
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, []);
+  if (!summary) {
+    return (
+      <div className="rounded-lg border border-[#ef6b5d]/30 bg-[#ef6b5d]/10 p-5 text-[#ffb0a7]">
+        暂无数据，请确认 API 服务已启动。
+      </div>
+    );
+  }
 
-  if (loading) return <div className="text-neutral-500">Loading...</div>;
-  if (!summary) return <div className="text-red-400">No data. Make sure the API server is running.</div>;
-
-  const fmt = (n: number) => {
-    if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
-    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-    return n.toLocaleString();
-  };
-
-  const presets = ['today', '7d', '30d', 'this_month'];
+  const sourceEntries = Object.entries(summary.bySource).sort((a, b) => b[1].totalTokens - a[1].totalTokens);
+  const modelEntries = Object.entries(summary.byModel).sort((a, b) => b[1].totalTokens - a[1].totalTokens);
+  const maxModelTokens = Math.max(...modelEntries.map(([, data]) => data.totalTokens), 0);
+  const topModel = modelEntries[0]?.[0] ?? '暂无模型数据';
+  const sourceCount = sourceEntries.length;
+  const totalIoTokens = summary.totalInputTokens + summary.totalOutputTokens;
+  const outputShare = totalIoTokens > 0 ? Math.round((summary.totalOutputTokens / totalIoTokens) * 100) : 0;
 
   return (
-    <div>
-      {/* Time filter */}
-      <div className="flex gap-2 mb-6">
-        {presets.map(p => (
-          <button
-            key={p}
-            onClick={() => setPreset(p)}
-            className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${
-              preset === p ? 'bg-blue-600 text-white' : 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700'
-            }`}
-          >
-            {p.replace('_', ' ')}
-          </button>
-        ))}
-      </div>
-
-      {/* Overview cards */}
-      <div className="grid grid-cols-3 gap-4 mb-8">
-        {[
-          { label: 'Total Tokens', value: fmt(summary.totalTokens) },
-          { label: 'Input Tokens', value: fmt(summary.totalInputTokens) },
-          { label: 'Output Tokens', value: fmt(summary.totalOutputTokens) },
-        ].map(card => (
-          <div key={card.label} className="bg-neutral-900 border border-neutral-800 rounded-xl p-5">
-            <div className="text-sm text-neutral-500 mb-1">{card.label}</div>
-            <div className="text-2xl font-bold">{card.value}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* By Source */}
-      <h2 className="text-lg font-semibold mb-4">By Source</h2>
-      <div className="grid grid-cols-3 gap-4 mb-8">
-        {Object.entries(summary.bySource).map(([source, data]) => {
-          const colors: Record<string, string> = {
-            'claude-code': 'from-orange-500 to-amber-500',
-            'codex': 'from-green-500 to-emerald-500',
-            'hermes': 'from-purple-500 to-violet-500',
-          };
-          return (
-            <div key={source} className="bg-neutral-900 border border-neutral-800 rounded-xl p-5">
-              <div className="flex items-center gap-2 mb-3">
-                <div className={`w-3 h-3 rounded-full bg-gradient-to-r ${colors[source] || 'from-blue-500 to-blue-600'}`} />
-                <span className="font-medium">{source}</span>
-              </div>
-              <div className="text-3xl font-bold mb-2">{fmt(data.totalTokens)}</div>
-              <div className="grid grid-cols-2 gap-2 text-sm text-neutral-400">
-                <div>In: {fmt(data.inputTokens)}</div>
-                <div>Out: {fmt(data.outputTokens)}</div>
-              </div>
+    <div className="space-y-6">
+      <section className="app-panel-strong overflow-hidden rounded-lg p-5 sm:p-6">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-[#62c7c9]/20 bg-[#62c7c9]/[0.08] px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] text-[#8fdadd]">
+              <Activity className="h-3.5 w-3.5" />
+              Token 总览
             </div>
-          );
-        })}
-      </div>
+            <h2 className="max-w-3xl text-3xl font-semibold tracking-tight text-[#fff9ea] sm:text-4xl">用量总览</h2>
+          </div>
 
-      {/* By Model */}
-      <h2 className="text-lg font-semibold mb-4">By Model</h2>
-      <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-5 mb-8">
-        {Object.entries(summary.byModel)
-          .sort((a, b) => b[1].totalTokens - a[1].totalTokens)
-          .map(([model, data]) => {
-            const maxTokens = Math.max(...Object.values(summary.byModel).map(d => d.totalTokens));
-            const pct = maxTokens > 0 ? (data.totalTokens / maxTokens) * 100 : 0;
+          <div className="chip inline-flex w-full rounded-lg p-1 sm:w-auto">
+            {presets.map((item) => (
+              <button
+                key={item.key}
+                onClick={() => setPreset(item.key)}
+                className={`h-9 flex-1 rounded-md px-3 text-sm font-medium transition-all sm:flex-none ${
+                  preset === item.key
+                    ? 'bg-[#d5a348] text-[#10120d] shadow-[0_0_22px_rgba(213,163,72,0.18)]'
+                    : 'text-[#9ba8a0] hover:bg-white/[0.055] hover:text-[#f4f1e8]'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {[
+            { label: 'Token 总量', value: formatTokens(summary.totalTokens), icon: Database, accent: 'text-[#f0bf5d]', detail: `${summary.totalSessions} 个会话` },
+            { label: '输入 Token', value: formatTokens(summary.totalInputTokens), icon: ArrowDownToLine, accent: 'text-[#62c7c9]', detail: '提示词与缓存写入' },
+            { label: '输出 Token', value: formatTokens(summary.totalOutputTokens), icon: ArrowUpFromLine, accent: 'text-[#86b86f]', detail: `占输入输出 ${outputShare}%` },
+            { label: '缓存读取', value: formatTokens(summary.totalCacheReadTokens), icon: Braces, accent: 'text-[#eaa568]', detail: `${sourceCount} 个来源` },
+          ].map((card) => {
+            const Icon = card.icon;
             return (
-              <div key={model} className="mb-3">
-                <div className="flex justify-between text-sm mb-1">
-                  <span>{model}</span>
-                  <span className="text-neutral-400">{fmt(data.totalTokens)}</span>
+              <div key={card.label} className="metric-grid rounded-lg border border-white/10 bg-black/[0.18] p-4">
+                <div className="mb-5 flex items-center justify-between">
+                  <span className="text-xs font-medium uppercase tracking-[0.14em] text-[#798780]">{card.label}</span>
+                  <Icon className={`h-4 w-4 ${card.accent}`} />
                 </div>
-                <div className="h-2 bg-neutral-800 rounded-full overflow-hidden">
-                  <div className="h-full bg-blue-600 rounded-full" style={{ width: `${pct}%` }} />
-                </div>
+                <div className="tabular text-3xl font-semibold tracking-tight text-[#fff9ea]">{card.value}</div>
+                <div className="mt-1 text-sm text-[#9ba8a0]">{card.detail}</div>
               </div>
             );
           })}
+        </div>
+      </section>
+
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+        <section>
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-[#d8cfb7]">按来源</h2>
+            <span className="text-xs text-[#7f8d86]">按 Token 用量排序</span>
+          </div>
+          <div className="grid gap-3">
+            {sourceEntries.map(([source, data]) => {
+              const colors: Record<string, { dot: string; tint: string; label: string }> = {
+                'claude-code': { dot: 'bg-[#eaa568]', tint: 'from-[#eaa568]/[0.18]', label: 'Claude Code' },
+                codex: { dot: 'bg-[#86b86f]', tint: 'from-[#86b86f]/[0.18]', label: 'Codex' },
+                hermes: { dot: 'bg-[#62c7c9]', tint: 'from-[#62c7c9]/[0.18]', label: 'Hermes' },
+              };
+              const color = colors[source] ?? { dot: 'bg-[#d5a348]', tint: 'from-[#d5a348]/[0.18]', label: source };
+              const pct = summary.totalTokens > 0 ? Math.round((data.totalTokens / summary.totalTokens) * 100) : 0;
+
+              return (
+                <div key={source} className={`app-panel rounded-lg bg-gradient-to-br ${color.tint} to-transparent p-4`}>
+                  <div className="mb-4 flex items-start justify-between gap-4">
+                    <div className="flex items-center gap-3">
+                      <div className={`h-2.5 w-2.5 rounded-full ${color.dot} shadow-[0_0_18px_currentColor]`} />
+                      <div>
+                        <div className="font-medium text-[#fff9ea]">{color.label}</div>
+                        <div className="text-xs text-[#8a9992]">{source}</div>
+                      </div>
+                    </div>
+                    <span className="tabular rounded-md border border-white/10 bg-black/[0.18] px-2 py-1 text-xs text-[#d8cfb7]">{pct}%</span>
+                  </div>
+                  <div className="tabular text-3xl font-semibold text-[#fff9ea]">{formatTokens(data.totalTokens)}</div>
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-sm text-[#9ba8a0]">
+                    <div className="rounded-md bg-black/[0.18] px-3 py-2">输入 <span className="tabular text-[#e8e0c8]">{formatTokens(data.inputTokens)}</span></div>
+                    <div className="rounded-md bg-black/[0.18] px-3 py-2">输出 <span className="tabular text-[#e8e0c8]">{formatTokens(data.outputTokens)}</span></div>
+                  </div>
+                </div>
+              );
+            })}
+            {sourceEntries.length === 0 && (
+              <div className="app-panel rounded-lg p-5 text-sm text-[#9ba8a0]">暂无来源数据。</div>
+            )}
+          </div>
+        </section>
+
+        <section className="app-panel rounded-lg p-4 sm:p-5">
+          <div className="mb-5 flex items-start justify-between gap-4">
+            <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-[#d8cfb7]">模型分布</h2>
+            <div className="flex items-center gap-2 text-xs text-[#9ba8a0]">
+              <span>最高用量：<span className="text-[#f4f1e8]">{topModel}</span></span>
+              <Layers3 className="h-5 w-5 text-[#62c7c9]" />
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            {modelEntries.map(([model, data]) => {
+              const pct = maxModelTokens > 0 ? (data.totalTokens / maxModelTokens) * 100 : 0;
+              return (
+                <div key={model}>
+                  <div className="mb-2 flex items-center justify-between gap-4 text-sm">
+                    <div className="min-w-0 truncate font-medium text-[#f4f1e8]">{model}</div>
+                    <div className="tabular shrink-0 text-[#d8cfb7]">{formatTokens(data.totalTokens)}</div>
+                  </div>
+                  <div className="h-2.5 overflow-hidden rounded-full bg-white/[0.055]">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-[#d5a348] via-[#86b86f] to-[#62c7c9] transition-all duration-700"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  <div className="mt-1 flex gap-3 text-xs text-[#7f8d86]">
+                    <span>输入 {formatTokens(data.inputTokens)}</span>
+                    <span>输出 {formatTokens(data.outputTokens)}</span>
+                  </div>
+                </div>
+              );
+            })}
+            {modelEntries.length === 0 && (
+              <div className="rounded-lg border border-dashed border-white/[0.12] p-6 text-center text-sm text-[#9ba8a0]">
+                暂无模型数据。
+              </div>
+            )}
+          </div>
+        </section>
+      </div>
+
+      <div className="app-panel rounded-lg p-4 text-sm text-[#9ba8a0] sm:flex sm:items-center sm:justify-between">
+        <div className="flex items-center gap-2">
+          <ServerCog className="h-4 w-4 text-[#86b86f]" />
+          每分钟自动同步并刷新当前视图。
+        </div>
+        <span className="mt-2 block text-xs text-[#73827b] sm:mt-0">当前范围：{presets.find((item) => item.key === preset)?.label}</span>
       </div>
     </div>
   );
