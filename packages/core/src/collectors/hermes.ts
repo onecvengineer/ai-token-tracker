@@ -178,7 +178,7 @@ export class HermesCollector implements ICollector {
         (session.input_tokens + session.output_tokens + session.cache_read_tokens + session.cache_write_tokens);
       if (totalTokens === 0) continue;
 
-      const model = 'unknown'; // sessions.json doesn't have model per session
+      const model = session.model || 'unknown';
       const date = session.updated_at?.split('T')[0] || session.created_at?.split('T')[0] || '';
 
       records.push({

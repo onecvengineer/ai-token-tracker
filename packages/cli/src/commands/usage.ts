@@ -119,9 +119,16 @@ function exportUsage(opts: {
   repo.close();
 
   if (opts.format === 'csv') {
+    const esc = (v: unknown) => {
+      const s = String(v ?? '');
+      if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+        return `"${s.replace(/"/g, '""')}"`;
+      }
+      return s;
+    };
     console.log('id,source,model,inputTokens,outputTokens,cacheReadTokens,totalTokens,costUSD,sessionId,usageDate');
     for (const record of records) {
-      console.log(`${record.id},${record.source},${record.model},${record.inputTokens},${record.outputTokens},${record.cacheReadTokens},${record.totalTokens},${record.costUSD},${record.sessionId},${record.usageDate}`);
+      console.log([record.id, record.source, record.model, record.inputTokens, record.outputTokens, record.cacheReadTokens, record.totalTokens, record.costUSD ?? '', record.sessionId, record.usageDate].map(esc).join(','));
     }
     return;
   }

@@ -19,6 +19,13 @@ function toISODate(date: Date): string {
   return date.toISOString().split('T')[0];
 }
 
+function toLocalDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 export function resolveUsageWindow(options: UsageQueryOptions, now = new Date()): ResolvedUsageWindow {
   let startDate = options.start;
   let endDate = options.end;
@@ -42,8 +49,8 @@ export function resolveUsageWindow(options: UsageQueryOptions, now = new Date())
       case 'last_month': {
         const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
         const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
-        startDate = toISODate(lastMonthStart);
-        endDate = toISODate(lastMonthEnd);
+        startDate = toLocalDate(lastMonthStart);
+        endDate = toLocalDate(lastMonthEnd);
         break;
       }
     }

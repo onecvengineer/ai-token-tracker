@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { open as openFile, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -51,9 +51,12 @@ interface CodexAccountAuthRow {
   status: 'active' | 'inactive' | 'unknown';
   accessToken: string | undefined;
   idToken: string | undefined;
+  refreshToken: string | undefined;
 }
 
 interface DecodedJWT {
+  client_id?: string;
+  exp?: number;
   email?: string;
   'https://api.openai.com/auth'?: {
     chatgpt_plan_type?: string;
@@ -61,10 +64,33 @@ interface DecodedJWT {
   };
 }
 
+interface CodexAuth {
+  auth_mode?: string;
+  OPENAI_API_KEY?: string | null;
+  tokens?: {
+    id_token?: string;
+    access_token?: string;
+    refresh_token?: string;
+  };
+  id_token?: string;
+  access_token?: string;
+  refresh_token?: string;
+  account_id?: string;
+  last_refresh?: string;
+}
+
+interface CodexAccountsData {
+  accounts: Record<string, CodexAuth>;
+  activeAccount: string;
+}
+
 const DEFAULT_CODEX_RATE_LIMIT_CONCURRENCY = 2;
 const DEFAULT_CODEX_RATE_LIMIT_TIMEOUT_MS = 8000;
 const DEFAULT_CODEX_RATE_LIMIT_RETRIES = 1;
 const DEFAULT_CODEX_RATE_LIMIT_FALLBACK_TIMEOUT_MS = 12000;
+const CODEX_TOKEN_REFRESH_SKEW_MS = 5 * 60 * 1000;
+const CODEX_TOKEN_REFRESH_LOCK_STALE_MS = 2 * 60 * 1000;
+const CODEX_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 
 function decodeJWT(token: string | undefined): DecodedJWT {
   if (!token) return {};
@@ -86,6 +112,74 @@ function getCodexModel(codexDir: string): string {
   }
 }
 
+function getAuthAccessToken(auth: CodexAuth): string | undefined {
+  return auth.tokens?.access_token || auth.access_token;
+}
+
+function getAuthIdToken(auth: CodexAuth): string | undefined {
+  return auth.tokens?.id_token || auth.id_token;
+}
+
+function getAuthRefreshToken(auth: CodexAuth): string | undefined {
+  return auth.tokens?.refresh_token || auth.refresh_token;
+}
+
+function isTokenExpiredOrExpiring(token: string | undefined): boolean {
+  const exp = decodeJWT(token).exp;
+  if (!exp) return false;
+  return exp * 1000 <= Date.now() + CODEX_TOKEN_REFRESH_SKEW_MS;
+}
+
+function setAuthTokens(auth: CodexAuth, refreshed: Required<Pick<CodexRefreshResponse, 'access_token'>> & CodexRefreshResponse): CodexAuth {
+  const next: CodexAuth = { ...auth };
+  const tokens = { ...(next.tokens ?? {}) };
+  tokens.access_token = refreshed.access_token;
+  if (refreshed.id_token) tokens.id_token = refreshed.id_token;
+  if (refreshed.refresh_token) tokens.refresh_token = refreshed.refresh_token;
+  next.tokens = tokens;
+  next.access_token = undefined;
+  next.id_token = undefined;
+  next.refresh_token = undefined;
+  next.last_refresh = new Date().toISOString();
+  return next;
+}
+
+function buildCodexAccountRow(
+  name: string,
+  auth: CodexAuth,
+  model: string,
+  activeAccount: string | null,
+): CodexAccountAuthRow {
+  const idToken = getAuthIdToken(auth);
+  const accessToken = getAuthAccessToken(auth);
+  const refreshToken = getAuthRefreshToken(auth);
+  const decoded = decodeJWT(idToken || accessToken);
+
+  return {
+    id: name,
+    name,
+    email: decoded.email || name,
+    model,
+    planType: decoded['https://api.openai.com/auth']?.chatgpt_plan_type || '-',
+    isActive: name === activeAccount,
+    status: !accessToken ? 'inactive' : name === activeAccount ? 'active' : 'inactive',
+    accessToken,
+    idToken,
+    refreshToken,
+  };
+}
+
+async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
+  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+  let mode = 0o600;
+  try {
+    mode = (await stat(path)).mode & 0o777;
+  } catch {}
+
+  await writeFile(tempPath, JSON.stringify(value, null, 2) + '\n', { encoding: 'utf-8', mode });
+  await rename(tempPath, path);
+}
+
 async function loadCodexAccountAuthRows(): Promise<CodexAccountAuthRow[]> {
   const codexDir = join(homedir(), '.codex');
   const authPath = join(codexDir, 'auth.json');
@@ -96,7 +190,7 @@ async function loadCodexAccountAuthRows(): Promise<CodexAccountAuthRow[]> {
   }
 
   const model = getCodexModel(codexDir);
-  let accountsData: { accounts: Record<string, any>; activeAccount: string } | null = null;
+  let accountsData: CodexAccountsData | null = null;
 
   if (existsSync(accountsPath)) {
     try {
@@ -105,40 +199,12 @@ async function loadCodexAccountAuthRows(): Promise<CodexAccountAuthRow[]> {
   }
 
   if (!accountsData || Object.keys(accountsData.accounts).length === 0) {
-    const auth = JSON.parse(await readFile(authPath, 'utf-8'));
-    const idToken = auth.tokens?.id_token || auth.id_token;
-    const accessToken = auth.tokens?.access_token || auth.access_token;
-    const decoded = decodeJWT(idToken || accessToken);
-
-    return [{
-      id: 'default',
-      name: 'default',
-      email: decoded.email || 'default',
-      model,
-      planType: decoded['https://api.openai.com/auth']?.chatgpt_plan_type || '-',
-      isActive: true,
-      status: accessToken ? 'active' : 'unknown',
-      accessToken,
-      idToken,
-    }];
+    const auth = JSON.parse(await readFile(authPath, 'utf-8')) as CodexAuth;
+    return [buildCodexAccountRow('default', auth, model, 'default')];
   }
 
   return Object.entries(accountsData.accounts).map(([name, auth]) => {
-    const idToken = auth.tokens?.id_token || auth.id_token;
-    const accessToken = auth.tokens?.access_token || auth.access_token;
-    const decoded = decodeJWT(idToken || accessToken);
-
-    return {
-      id: name,
-      name,
-      email: decoded.email || name,
-      model,
-      planType: decoded['https://api.openai.com/auth']?.chatgpt_plan_type || '-',
-      isActive: name === accountsData?.activeAccount,
-      status: !accessToken ? 'inactive' : name === accountsData?.activeAccount ? 'active' : 'inactive',
-      accessToken,
-      idToken,
-    };
+    return buildCodexAccountRow(name, auth, model, accountsData?.activeAccount ?? null);
   });
 }
 
@@ -324,9 +390,37 @@ interface ChatGPTUsageResponse {
   };
 }
 
-function proxiedHttpsGet(urlStr: string, headers: Record<string, string>, timeout = 8000): Promise<string> {
+interface CodexRefreshResponse {
+  access_token?: string;
+  id_token?: string;
+  refresh_token?: string;
+  token_type?: string;
+  expires_in?: number;
+  error?: string;
+  error_description?: string;
+}
+
+function debugCodexBalance(message: string, detail?: Record<string, unknown>): void {
+  if (!process.env.ATT_DEBUG_BALANCE) return;
+  const suffix = detail ? ` ${JSON.stringify(detail)}` : '';
+  console.warn(`[att:codex-balance] ${message}${suffix}`);
+}
+
+function proxiedHttpsRequest(
+  urlStr: string,
+  options: {
+    method?: string;
+    headers?: Record<string, string | number>;
+    body?: string;
+    timeout?: number;
+  } = {},
+): Promise<{ statusCode: number | undefined; body: string }> {
   const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy;
   const target = new URL(urlStr);
+  const method = options.method ?? 'GET';
+  const timeout = options.timeout ?? 8000;
+  const headers = options.headers ?? {};
+  const body = options.body;
 
   if (proxyUrl) {
     // Use HTTP CONNECT proxy tunnel
@@ -351,19 +445,22 @@ function proxiedHttpsGet(urlStr: string, headers: Record<string, string>, timeou
         }, () => {
           const req = https.request({
             hostname: target.hostname,
-            path: target.pathname,
-            method: 'GET',
+            path: `${target.pathname}${target.search}`,
+            method,
             headers,
             createConnection: () => tlsSocket,
             timeout,
           }, (tlsRes) => {
             const chunks: Buffer[] = [];
             tlsRes.on('data', (c) => chunks.push(c));
-            tlsRes.on('end', () => resolve(Buffer.concat(chunks).toString()));
+            tlsRes.on('end', () => resolve({
+              statusCode: tlsRes.statusCode,
+              body: Buffer.concat(chunks).toString(),
+            }));
           });
           req.on('error', reject);
           req.on('timeout', () => { req.destroy(); reject(new Error('tls timeout')); });
-          req.end();
+          req.end(body);
         });
         tlsSocket.on('error', reject);
       });
@@ -375,14 +472,267 @@ function proxiedHttpsGet(urlStr: string, headers: Record<string, string>, timeou
 
   // Direct connection
   return new Promise((resolve, reject) => {
-    const req = https.get(urlStr, { headers, family: 4, timeout }, (res) => {
+    const req = https.request(urlStr, { method, headers, family: 4, timeout }, (res) => {
       const chunks: Buffer[] = [];
       res.on('data', (c) => chunks.push(c));
-      res.on('end', () => resolve(Buffer.concat(chunks).toString()));
+      res.on('end', () => resolve({
+        statusCode: res.statusCode,
+        body: Buffer.concat(chunks).toString(),
+      }));
     });
     req.on('error', reject);
     req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+    req.end(body);
   });
+}
+
+function proxiedHttpsGet(urlStr: string, headers: Record<string, string>, timeout = 8000): Promise<string> {
+  return proxiedHttpsRequest(urlStr, { headers, timeout }).then((response) => response.body);
+}
+
+async function fetchCodexJson<T>(
+  urlStr: string,
+  headers: Record<string, string>,
+  timeoutMs: number,
+): Promise<T | undefined> {
+  try {
+    const response = await withTimeout(
+      proxiedHttpsRequest(urlStr, { headers, timeout: timeoutMs }),
+      timeoutMs,
+    );
+    let json: T & { error?: unknown; detail?: unknown; message?: unknown };
+    try {
+      json = JSON.parse(response.body) as T & { error?: unknown; detail?: unknown; message?: unknown };
+    } catch {
+      debugCodexBalance('usage response was not JSON', {
+        statusCode: response.statusCode,
+        bodyPrefix: response.body.slice(0, 80),
+      });
+      return undefined;
+    }
+    if (response.statusCode && response.statusCode >= 400) {
+      debugCodexBalance('usage request failed', {
+        statusCode: response.statusCode,
+        error: json.error,
+        detail: json.detail,
+        message: json.message,
+      });
+      return undefined;
+    }
+    return json;
+  } catch (error) {
+    debugCodexBalance('usage request threw', {
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+}
+
+async function refreshCodexAuthTokens(
+  refreshToken: string | undefined,
+  timeoutMs: number,
+  clientId: string,
+): Promise<CodexRefreshResponse | undefined> {
+  if (!refreshToken) return undefined;
+
+  try {
+    const body = new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+      client_id: clientId,
+    }).toString();
+    const response = await withTimeout(
+      proxiedHttpsRequest('https://auth.openai.com/oauth/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Content-Length': Buffer.byteLength(body),
+        },
+        body,
+        timeout: timeoutMs,
+      }),
+      timeoutMs,
+    );
+    let refreshed: CodexRefreshResponse;
+    try {
+      refreshed = JSON.parse(response.body) as CodexRefreshResponse;
+    } catch {
+      debugCodexBalance('refresh response was not JSON', {
+        statusCode: response.statusCode,
+        bodyPrefix: response.body.slice(0, 80),
+      });
+      return undefined;
+    }
+    if (response.statusCode && response.statusCode >= 400) {
+      debugCodexBalance('refresh request failed', {
+        statusCode: response.statusCode,
+        error: refreshed.error,
+        errorDescription: refreshed.error_description,
+      });
+      return undefined;
+    }
+    if (!refreshed.access_token) {
+      debugCodexBalance('refresh response missing access_token', {
+        statusCode: response.statusCode,
+        error: refreshed.error,
+        errorDescription: refreshed.error_description,
+      });
+    }
+    return refreshed.access_token ? refreshed : undefined;
+  } catch (error) {
+    debugCodexBalance('refresh request threw', {
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+}
+
+async function reloadCodexAccountRow(row: CodexAccountAuthRow): Promise<CodexAccountAuthRow> {
+  const codexDir = join(homedir(), '.codex');
+  const authPath = join(codexDir, 'auth.json');
+  const accountsPath = join(codexDir, 'accounts.json');
+  const model = row.model || getCodexModel(codexDir);
+
+  if (existsSync(accountsPath)) {
+    try {
+      const accountsData = JSON.parse(await readFile(accountsPath, 'utf-8')) as CodexAccountsData;
+      const auth = accountsData.accounts[row.id];
+      if (auth) {
+        return buildCodexAccountRow(row.id, auth, model, accountsData.activeAccount);
+      }
+    } catch {}
+  }
+
+  if (row.id === 'default' && existsSync(authPath)) {
+    try {
+      const auth = JSON.parse(await readFile(authPath, 'utf-8')) as CodexAuth;
+      return buildCodexAccountRow('default', auth, model, 'default');
+    } catch {}
+  }
+
+  return row;
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function codexRefreshLockPath(accountId: string): string {
+  const safeAccountId = accountId.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return join(homedir(), '.codex', `.att-refresh-${safeAccountId}.lock`);
+}
+
+async function removeStaleLock(lockPath: string): Promise<void> {
+  try {
+    const lockStat = await stat(lockPath);
+    if (Date.now() - lockStat.mtimeMs > CODEX_TOKEN_REFRESH_LOCK_STALE_MS) {
+      await unlink(lockPath);
+    }
+  } catch {}
+}
+
+async function acquireCodexRefreshLock(accountId: string, timeoutMs: number): Promise<() => Promise<void>> {
+  const lockPath = codexRefreshLockPath(accountId);
+  const startedAt = Date.now();
+
+  while (true) {
+    try {
+      const handle = await openFile(lockPath, 'wx');
+      await handle.writeFile(JSON.stringify({
+        pid: process.pid,
+        accountId,
+        createdAt: new Date().toISOString(),
+      }));
+      await handle.close();
+      return async () => {
+        try {
+          await unlink(lockPath);
+        } catch {}
+      };
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EEXIST') throw error;
+      await removeStaleLock(lockPath);
+      if (Date.now() - startedAt > timeoutMs) {
+        throw new Error(`timeout waiting for refresh lock: ${accountId}`);
+      }
+      await sleep(150);
+    }
+  }
+}
+
+async function withCodexRefreshLock<T>(
+  accountId: string,
+  action: () => Promise<T>,
+  fallback: T,
+): Promise<T> {
+  let release: (() => Promise<void>) | undefined;
+  try {
+    release = await acquireCodexRefreshLock(accountId, DEFAULT_CODEX_RATE_LIMIT_FALLBACK_TIMEOUT_MS);
+    return await action();
+  } catch (error) {
+    debugCodexBalance('refresh lock failed', {
+      accountId,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return fallback;
+  } finally {
+    await release?.();
+  }
+}
+
+async function refreshCodexAccountRow(row: CodexAccountAuthRow, timeoutMs: number): Promise<CodexAccountAuthRow> {
+  return withCodexRefreshLock(row.id, async () => {
+    const latestRow = await reloadCodexAccountRow(row);
+    if (!isTokenExpiredOrExpiring(latestRow.accessToken)) {
+      return latestRow;
+    }
+
+    const clientId = decodeJWT(latestRow.accessToken).client_id || CODEX_OAUTH_CLIENT_ID;
+    const refreshed = await refreshCodexAuthTokens(latestRow.refreshToken, timeoutMs, clientId);
+    if (!refreshed?.access_token) return latestRow;
+
+    const nextRow = {
+      ...latestRow,
+      accessToken: refreshed.access_token,
+      idToken: refreshed.id_token || latestRow.idToken,
+      refreshToken: refreshed.refresh_token || latestRow.refreshToken,
+      email: decodeJWT(refreshed.id_token || latestRow.idToken || refreshed.access_token).email || latestRow.email,
+      planType: decodeJWT(refreshed.id_token || latestRow.idToken || refreshed.access_token)['https://api.openai.com/auth']?.chatgpt_plan_type || latestRow.planType,
+    };
+    await persistRefreshedCodexAccount(nextRow);
+    return nextRow;
+  }, row);
+}
+
+async function persistRefreshedCodexAccount(row: CodexAccountAuthRow): Promise<void> {
+  const codexDir = join(homedir(), '.codex');
+  const authPath = join(codexDir, 'auth.json');
+  const accountsPath = join(codexDir, 'accounts.json');
+
+  if (existsSync(accountsPath)) {
+    try {
+      const accountsData = JSON.parse(await readFile(accountsPath, 'utf-8')) as CodexAccountsData;
+      const auth = accountsData.accounts[row.id];
+      if (!auth) return;
+      accountsData.accounts[row.id] = setAuthTokens(auth, { access_token: row.accessToken!, id_token: row.idToken, refresh_token: row.refreshToken });
+      await writeJsonAtomic(accountsPath, accountsData);
+      if (accountsData.activeAccount === row.id) {
+        await writeJsonAtomic(authPath, accountsData.accounts[row.id]);
+      }
+      return;
+    } catch {
+      return;
+    }
+  }
+
+  if (row.id === 'default' && existsSync(authPath)) {
+    try {
+      const auth = JSON.parse(await readFile(authPath, 'utf-8')) as CodexAuth;
+      const next = setAuthTokens(auth, { access_token: row.accessToken!, id_token: row.idToken, refresh_token: row.refreshToken });
+      await writeJsonAtomic(authPath, next);
+    } catch {}
+  }
 }
 
 export async function getCodexAccountStatuses(options?: {
@@ -395,58 +745,78 @@ export async function getCodexAccountStatuses(options?: {
   const timeoutMs = options?.timeoutMs ?? DEFAULT_CODEX_RATE_LIMIT_TIMEOUT_MS;
   const retries = options?.retries ?? DEFAULT_CODEX_RATE_LIMIT_RETRIES;
   const rateLimitsByAccountId = new Map<string, BalanceResult['rateLimits']>();
+  const refreshedRowsByAccountId = new Map<string, CodexAccountAuthRow>();
 
   await mapWithConcurrency(authRows, concurrency, async (row) => {
-    const rateLimits = await fetchCodexRateLimitsWithRetry(row.accessToken, row.idToken, {
+    const result = await fetchCodexRateLimitsWithRetry(row, {
       timeoutMs,
       retries,
     });
-    rateLimitsByAccountId.set(row.id, rateLimits);
+    rateLimitsByAccountId.set(row.id, result.rateLimits);
+    if (result.row !== row) {
+      refreshedRowsByAccountId.set(row.id, result.row);
+    }
   });
 
   if (concurrency > 1) {
     for (const row of authRows) {
-      if (!row.accessToken || rateLimitsByAccountId.get(row.id)) continue;
-      const rateLimits = await fetchCodexRateLimitsWithRetry(row.accessToken, row.idToken, {
+      const currentRow = refreshedRowsByAccountId.get(row.id) || row;
+      if (!currentRow.accessToken || rateLimitsByAccountId.get(row.id)) continue;
+      if (isTokenExpiredOrExpiring(currentRow.accessToken)) continue;
+      const result = await fetchCodexRateLimitsWithRetry(currentRow, {
         timeoutMs: Math.max(timeoutMs, DEFAULT_CODEX_RATE_LIMIT_FALLBACK_TIMEOUT_MS),
         retries,
       });
-      rateLimitsByAccountId.set(row.id, rateLimits);
+      rateLimitsByAccountId.set(row.id, result.rateLimits);
+      if (result.row !== currentRow) {
+        refreshedRowsByAccountId.set(row.id, result.row);
+      }
     }
   }
 
   return authRows.map((row) => {
-    const rateLimits = rateLimitsByAccountId.get(row.id);
+    const currentRow = refreshedRowsByAccountId.get(row.id) || row;
+    const rateLimits = rateLimitsByAccountId.get(currentRow.id);
     return {
-      id: row.id,
-      name: row.name,
-      email: row.email,
-      model: row.model,
-      planType: rateLimits?.planType || row.planType,
-      isActive: row.isActive,
-      status: row.status,
+      id: currentRow.id,
+      name: currentRow.name,
+      email: currentRow.email,
+      model: currentRow.model,
+      planType: rateLimits?.planType || currentRow.planType,
+      isActive: currentRow.isActive,
+      status: currentRow.status,
       rateLimits,
     };
   });
 }
 
 async function fetchCodexRateLimitsWithRetry(
-  accessToken: string | undefined,
-  idToken: string | undefined,
+  row: CodexAccountAuthRow,
   options?: { timeoutMs?: number; retries?: number },
-): Promise<BalanceResult['rateLimits']> {
+): Promise<{ row: CodexAccountAuthRow; rateLimits: BalanceResult['rateLimits'] }> {
   const retries = Math.max(options?.retries ?? DEFAULT_CODEX_RATE_LIMIT_RETRIES, 0);
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_CODEX_RATE_LIMIT_TIMEOUT_MS;
+  let currentRow = row;
 
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
-    const rateLimits = await fetchCodexRateLimits(accessToken, idToken, {
-      timeoutMs: options?.timeoutMs ?? DEFAULT_CODEX_RATE_LIMIT_TIMEOUT_MS,
-    });
-    if (rateLimits) {
-      return rateLimits;
+  if (isTokenExpiredOrExpiring(currentRow.accessToken)) {
+    const nextRow = await refreshCodexAccountRow(currentRow, timeoutMs);
+    if (nextRow !== currentRow) {
+      currentRow = nextRow;
+    } else {
+      return { row: currentRow, rateLimits: undefined };
     }
   }
 
-  return undefined;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const rateLimits = await fetchCodexRateLimits(currentRow.accessToken, currentRow.idToken, {
+      timeoutMs,
+    });
+    if (rateLimits) {
+      return { row: currentRow, rateLimits };
+    }
+  }
+
+  return { row: currentRow, rateLimits: undefined };
 }
 
 export async function fetchCodexRateLimits(
@@ -475,13 +845,15 @@ export async function fetchCodexRateLimits(
     }
 
     const timeoutMs = options?.timeoutMs ?? 8000;
-    const body = await withTimeout(
-      proxiedHttpsGet('https://chatgpt.com/backend-api/wham/usage', headers, timeoutMs),
-      timeoutMs,
-    );
-    const json = JSON.parse(body) as ChatGPTUsageResponse;
+    const json = await fetchCodexJson<ChatGPTUsageResponse>('https://chatgpt.com/backend-api/wham/usage', headers, timeoutMs);
+    if (!json) return undefined;
     const rl = json.rate_limit;
-    if (!rl) return undefined;
+    if (!rl) {
+      debugCodexBalance('usage response missing rate_limit', {
+        planType: json.plan_type,
+      });
+      return undefined;
+    }
 
     return {
       planType: json.plan_type || null,

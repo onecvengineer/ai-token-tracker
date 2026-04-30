@@ -118,8 +118,8 @@ export class CodexCollector implements ICollector {
           totalTokens = rollout.totalTokens;
           rateLimits = rollout.rateLimits;
         } else {
-          // Fallback: only total available from threads table
-          inputTokens = thread.tokens_used;
+          // Fallback: only total available from threads table, no breakdown
+          inputTokens = 0;
           outputTokens = 0;
           cacheReadTokens = 0;
           totalTokens = thread.tokens_used;

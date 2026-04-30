@@ -294,7 +294,7 @@ export class ClaudeCodeCollector implements ICollector {
       if (authToken && (baseUrl.includes('bigmodel.cn') || baseUrl.includes('z.ai'))) {
         return { baseUrl, authToken };
       }
-    } catch {}
+    } catch { /* settings.json may not exist or be malformed */ }
     return null;
   }
 
@@ -321,10 +321,10 @@ export class ClaudeCodeCollector implements ICollector {
 
     const now = new Date();
 
-    // Query in 2-day chunks to stay within API limits
+    // Query in 2-day non-overlapping chunks to stay within API limits
     for (let daysAgo = 0; daysAgo < 30; daysAgo += 2) {
-      const endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysAgo, now.getHours(), 59, 59, 999);
-      const startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysAgo - 2, now.getHours(), 0, 0, 0);
+      const endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysAgo, 23, 59, 59, 999);
+      const startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysAgo - 1, 0, 0, 0);
 
       try {
         const data = await this.queryZhipuModelUsage(config, startDate, endDate);
@@ -374,7 +374,7 @@ export class ClaudeCodeCollector implements ICollector {
           dailyMap.set(duKey, dailyEntry);
         }
       } catch {
-        // Skip failed chunks
+        // Skip failed chunks (API may reject ranges that are too wide)
       }
     }
 

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { serve } from '@hono/node-server';
-import { ClaudeCodeCollector, CodexCollector, HermesCollector, Repository, getAllBalances, ClaudeCodeConfig, CodexConfig } from '@att/core';
+import { ClaudeCodeCollector, CodexCollector, HermesCollector, Repository, getAllBalances, ClaudeCodeConfig, CodexConfig, resolveUsageWindow } from '@att/core';
 import type { Source } from '@att/core';
 
 const app = new Hono();
@@ -47,76 +47,77 @@ app.post('/api/sync', async (c) => {
 // ========== Usage ==========
 
 app.get('/api/usage/summary', (c) => {
-  const start = c.req.query('start');
-  const end = c.req.query('end');
-  const preset = c.req.query('preset');
-
-  let startDate = start;
-  let endDate = end;
-
-  if (preset) {
-    const now = new Date();
-    endDate = now.toISOString().split('T')[0];
-    switch (preset) {
-      case 'today':
-        startDate = endDate;
-        break;
-      case '7d':
-        startDate = new Date(now.getTime() - 7 * 86400000).toISOString().split('T')[0];
-        break;
-      case '30d':
-        startDate = new Date(now.getTime() - 30 * 86400000).toISOString().split('T')[0];
-        break;
-      case 'this_month':
-        startDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
-        break;
-      case 'last_month': {
-        const lm = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-        startDate = `${lm.getFullYear()}-${String(lm.getMonth() + 1).padStart(2, '0')}-01`;
-        const lmEnd = new Date(now.getFullYear(), now.getMonth(), 0);
-        endDate = `${lmEnd.getFullYear()}-${String(lmEnd.getMonth() + 1).padStart(2, '0')}-${String(lmEnd.getDate()).padStart(2, '0')}`;
-        break;
-      }
-    }
-  }
+  const { startDate, endDate } = resolveUsageWindow({
+    start: c.req.query('start'),
+    end: c.req.query('end'),
+    preset: c.req.query('preset'),
+  });
 
   const summary = repo.getUsageSummary(startDate, endDate);
   return c.json(summary);
 });
 
 app.get('/api/usage/daily', (c) => {
-  const start = c.req.query('start');
-  const end = c.req.query('end');
   const source = c.req.query('source') as Source | undefined;
-  return c.json(repo.getDailyUsage(start, end, source));
+  const { startDate, endDate } = resolveUsageWindow({
+    start: c.req.query('start'),
+    end: c.req.query('end'),
+    preset: c.req.query('preset'),
+  });
+  return c.json(repo.getDailyUsage(startDate, endDate, source));
 });
 
 app.get('/api/usage/by-model', (c) => {
-  const summary = repo.getUsageSummary(c.req.query('start'), c.req.query('end'));
+  const { startDate, endDate } = resolveUsageWindow({
+    start: c.req.query('start'),
+    end: c.req.query('end'),
+    preset: c.req.query('preset'),
+  });
+  const summary = repo.getUsageSummary(startDate, endDate);
   return c.json(summary.byModel);
 });
 
 app.get('/api/usage/by-source', (c) => {
-  const summary = repo.getUsageSummary(c.req.query('start'), c.req.query('end'));
+  const { startDate, endDate } = resolveUsageWindow({
+    start: c.req.query('start'),
+    end: c.req.query('end'),
+    preset: c.req.query('preset'),
+  });
+  const summary = repo.getUsageSummary(startDate, endDate);
   return c.json(summary.bySource);
 });
 
 app.get('/api/usage/records', (c) => {
-  const start = c.req.query('start');
-  const end = c.req.query('end');
   const source = c.req.query('source') as Source | undefined;
+  const { startDate, endDate } = resolveUsageWindow({
+    start: c.req.query('start'),
+    end: c.req.query('end'),
+    preset: c.req.query('preset'),
+  });
   const limit = parseInt(c.req.query('limit') || '100');
-  return c.json(repo.getRecords(start, end, source, limit));
+  return c.json(repo.getRecords(startDate, endDate, source, limit));
 });
 
 app.get('/api/usage/export', (c) => {
   const format = c.req.query('format') || 'json';
-  const records = repo.getRecords(c.req.query('start'), c.req.query('end'), undefined, 10000);
+  const { startDate, endDate } = resolveUsageWindow({
+    start: c.req.query('start'),
+    end: c.req.query('end'),
+    preset: c.req.query('preset'),
+  });
+  const records = repo.getRecords(startDate, endDate, undefined, 10000);
 
   if (format === 'csv') {
     const header = 'id,source,model,inputTokens,outputTokens,cacheReadTokens,totalTokens,costUSD,sessionId,usageDate\n';
+    const esc = (v: unknown) => {
+      const s = String(v ?? '');
+      if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+        return `"${s.replace(/"/g, '""')}"`;
+      }
+      return s;
+    };
     const rows = records.map(r =>
-      `${r.id},${r.source},${r.model},${r.inputTokens},${r.outputTokens},${r.cacheReadTokens},${r.totalTokens},${r.costUSD},${r.sessionId},${r.usageDate}`
+      [r.id, r.source, r.model, r.inputTokens, r.outputTokens, r.cacheReadTokens, r.totalTokens, r.costUSD ?? '', r.sessionId, r.usageDate].map(esc).join(',')
     ).join('\n');
     return c.text(header + rows, 200, {
       'Content-Type': 'text/csv',
