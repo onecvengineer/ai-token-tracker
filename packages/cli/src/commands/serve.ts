@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -12,6 +12,13 @@ interface WebRuntimeState {
   apiPid: number;
   webPid: number;
 }
+
+interface SpawnCommand {
+  command: string;
+  args: string[];
+}
+
+const WEB_PORT = '3457';
 
 function getRepoRoot(): string {
   const currentDir = dirname(fileURLToPath(import.meta.url));
@@ -59,9 +66,110 @@ function isProcessAlive(pid: number): boolean {
 }
 
 function killProcessGroup(pid: number): void {
+  if (process.platform === 'win32') {
+    spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
+    return;
+  }
+
   try {
     process.kill(-pid, 'SIGTERM');
   } catch {}
+}
+
+function killWindowsPortProcesses(ports: string[]): void {
+  if (process.platform !== 'win32') return;
+
+  const portSet = new Set(ports);
+  const result = spawnSync('netstat', ['-ano', '-p', 'tcp'], { encoding: 'utf-8' });
+  if (result.error || !result.stdout) return;
+
+  for (const line of result.stdout.split(/\r?\n/)) {
+    const columns = line.trim().split(/\s+/);
+    if (columns.length < 5 || columns[0] !== 'TCP' || columns[3] !== 'LISTENING') {
+      continue;
+    }
+
+    const port = columns[1].split(':').at(-1);
+    const pid = Number(columns[4]);
+    if (port && portSet.has(port) && Number.isInteger(pid) && pid > 0) {
+      killProcessGroup(pid);
+    }
+  }
+}
+
+function getPnpmCommand(): SpawnCommand {
+  const npmExecPath = process.env.npm_execpath;
+  if (npmExecPath?.toLowerCase().includes('pnpm') && existsSync(npmExecPath)) {
+    return {
+      command: process.execPath,
+      args: [npmExecPath],
+    };
+  }
+
+  const candidates = [
+    process.env.APPDATA ? resolve(process.env.APPDATA, 'npm/node_modules/pnpm/bin/pnpm.cjs') : null,
+    process.env.LOCALAPPDATA ? resolve(process.env.LOCALAPPDATA, 'pnpm/global/5/node_modules/pnpm/bin/pnpm.cjs') : null,
+    resolve(getRepoRoot(), 'node_modules/pnpm/bin/pnpm.cjs'),
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) {
+      return {
+        command: process.execPath,
+        args: [candidate],
+      };
+    }
+  }
+
+  if (process.platform === 'win32') {
+    return {
+      command: 'cmd.exe',
+      args: ['/d', '/s', '/c', 'pnpm'],
+    };
+  }
+
+  return {
+    command: 'pnpm',
+    args: [],
+  };
+}
+
+function getWebCommand(webDir: string): SpawnCommand {
+  const pnpm = getPnpmCommand();
+  return {
+    command: pnpm.command,
+    args: [...pnpm.args, '--dir', webDir, 'dev'],
+  };
+}
+
+function waitForChildSpawn(child: ChildProcess, label: string): Promise<void> {
+  return new Promise((resolvePromise, reject) => {
+    let settled = false;
+
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.off('error', onError);
+      child.off('exit', onExit);
+      callback();
+    };
+
+    const onError = (error: Error) => {
+      finish(() => reject(new Error(`Failed to start ${label}: ${error.message}`)));
+    };
+
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      finish(() => reject(new Error(`${label} exited during startup with ${signal ?? `code ${code ?? 0}`}`)));
+    };
+
+    const timer = setTimeout(() => {
+      finish(resolvePromise);
+    }, 250);
+
+    child.once('error', onError);
+    child.once('exit', onExit);
+  });
 }
 
 function startApiChild(port: string): ChildProcess {
@@ -80,8 +188,9 @@ function startApiChild(port: string): ChildProcess {
 function startWebChild(port: string): ChildProcess {
   const repoRoot = getRepoRoot();
   const webDir = resolve(repoRoot, 'packages/web');
+  const webCommand = getWebCommand(webDir);
 
-  return spawn('pnpm', ['--dir', webDir, 'dev'], {
+  return spawn(webCommand.command, webCommand.args, {
     stdio: 'inherit',
     env: {
       ...process.env,
@@ -107,8 +216,9 @@ function startDetachedApiChild(port: string): ChildProcess {
 function startDetachedWebChild(port: string): ChildProcess {
   const repoRoot = getRepoRoot();
   const webDir = resolve(repoRoot, 'packages/web');
+  const webCommand = getWebCommand(webDir);
 
-  return spawn('pnpm', ['--dir', webDir, 'dev'], {
+  return spawn(webCommand.command, webCommand.args, {
     detached: true,
     stdio: 'ignore',
     env: {
@@ -130,6 +240,7 @@ async function stopDetachedWebRuntime(): Promise<boolean> {
   if (isProcessAlive(state.webPid)) {
     killProcessGroup(state.webPid);
   }
+  killWindowsPortProcesses([state.port, WEB_PORT]);
 
   await clearRuntimeState();
   return true;
@@ -147,6 +258,21 @@ async function startDetachedWebRuntime(port: string): Promise<void> {
   const apiChild = startDetachedApiChild(port);
   const webChild = startDetachedWebChild(port);
 
+  try {
+    await Promise.all([
+      waitForChildSpawn(apiChild, 'detached API runtime'),
+      waitForChildSpawn(webChild, 'detached web runtime'),
+    ]);
+  } catch (error) {
+    if (apiChild.pid && isProcessAlive(apiChild.pid)) {
+      killProcessGroup(apiChild.pid);
+    }
+    if (webChild.pid && isProcessAlive(webChild.pid)) {
+      killProcessGroup(webChild.pid);
+    }
+    throw error;
+  }
+
   if (!apiChild.pid || !webChild.pid) {
     throw new Error('Failed to start detached web runtime');
   }
@@ -162,7 +288,7 @@ async function startDetachedWebRuntime(port: string): Promise<void> {
 
   console.log(`ATT web runtime started in background.`);
   console.log(`API: http://localhost:${port}`);
-  console.log(`Web: http://localhost:3457`);
+  console.log(`Web: http://localhost:${WEB_PORT}`);
   console.log(`Stop with: att web stop`);
 }
 
@@ -186,6 +312,18 @@ async function runApiWithWeb(port: string): Promise<void> {
   process.once('SIGTERM', () => {
     cleanup();
     process.exit(0);
+  });
+
+  apiChild.once('error', (error) => {
+    cleanup();
+    console.error(`Failed to start API runtime: ${error.message}`);
+    process.exit(1);
+  });
+
+  webChild.once('error', (error) => {
+    cleanup();
+    console.error(`Failed to start web runtime: ${error.message}`);
+    process.exit(1);
   });
 
   apiChild.once('exit', (code) => {

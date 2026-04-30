@@ -1,6 +1,8 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { serve } from '@hono/node-server';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { ClaudeCodeCollector, CodexCollector, HermesCollector, Repository, getAllBalances, ClaudeCodeConfig, CodexConfig, resolveUsageWindow } from '@att/core';
 import type { Source } from '@att/core';
 
@@ -203,6 +205,6 @@ export function startServer() {
 export { app };
 
 // Auto-start if called directly
-if (process.argv[1]?.endsWith('api/dist/index.js')) {
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   startServer();
 }
