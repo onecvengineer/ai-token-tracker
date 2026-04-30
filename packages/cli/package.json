@@ -7,7 +7,7 @@
     "att": "./dist/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node ../../scripts/link-att-bin.mjs",
     "dev": "tsc --watch",
     "type-check": "tsc --noEmit"
   },

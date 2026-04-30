@@ -10,7 +10,7 @@
 
 ```bash
 # 安装依赖并构建
-pnpm install && pnpm -r build
+pnpm install && pnpm build
 
 # 同步数据
 att sync
@@ -29,7 +29,7 @@ att balance
 
 ```bash
 pnpm install
-pnpm -r build
+pnpm build
 
 # 仅构建特定包
 pnpm --filter @att/core build
@@ -41,7 +41,11 @@ pnpm --filter @att/web build
 全局命令链接：
 
 ```bash
-ln -sf /home/haibare/project/ai-token-tracker/packages/cli/dist/index.js ~/.local/bin/att
+# CLI 构建后会自动链接到 ~/.local/bin/att
+pnpm --filter @att/cli build
+
+# 如果要链接到其他目录
+ATT_BIN_DIR=/usr/local/bin pnpm --filter @att/cli build
 ```
 
 ## 命令参考
