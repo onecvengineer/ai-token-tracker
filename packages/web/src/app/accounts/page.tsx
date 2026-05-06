@@ -17,6 +17,8 @@ interface AgentBalance {
   accountName: string;
   model: string;
   status: 'active' | 'inactive' | 'unknown';
+  quotaScope?: 'client' | 'account';
+  quotaProvider?: string;
   rateLimits?: BalanceRateLimits;
 }
 
@@ -79,6 +81,11 @@ function formatStatus(status: AgentBalance['status']): string {
     unknown: '未知',
   };
   return labels[status];
+}
+
+function formatQuotaScope(balance: AgentBalance): string | null {
+  if (balance.quotaScope !== 'account') return null;
+  return `${balance.quotaProvider || balance.accountName} 账号级`;
 }
 
 export default function AccountsPage() {
@@ -156,6 +163,7 @@ export default function AccountsPage() {
           const hasSubscription = !!balance.rateLimits?.planType || rateLimitLines.length > 0;
           const codexAlias = getCodexAlias(balance, codexAccounts);
           const canSwitch = balance.source === 'codex' && !!codexAlias && balance.status !== 'active';
+          const quotaScopeLabel = formatQuotaScope(balance);
           const statusStyles = {
             active: {
               dot: 'bg-[#86b86f]',
@@ -182,7 +190,9 @@ export default function AccountsPage() {
                   <div className={`h-2.5 w-2.5 shrink-0 rounded-full ${statusStyles.dot} shadow-[0_0_18px_currentColor]`} />
                   <div className="min-w-0">
                     <div className="truncate font-semibold text-[#fff9ea]">{balance.source}</div>
-                    <div className="truncate text-xs text-[#7f8d86]">{balance.accountName}</div>
+                    <div className="truncate text-xs text-[#7f8d86]">
+                      {quotaScopeLabel ? `${balance.accountName} · ${quotaScopeLabel}` : balance.accountName}
+                    </div>
                   </div>
                 </div>
                 <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${statusStyles.badge}`}>
@@ -211,8 +221,15 @@ export default function AccountsPage() {
 
                 {balance.rateLimits?.planType && (
                   <div className="flex items-center justify-between gap-4 rounded-md bg-[#62c7c9]/[0.08] px-3 py-2">
-                    <span className="text-[#7f8d86]">套餐</span>
+                    <span className="text-[#7f8d86]">{quotaScopeLabel ? '账号套餐' : '套餐'}</span>
                     <span className="text-[#8fdadd]">{balance.rateLimits.planType}</span>
+                  </div>
+                )}
+
+                {quotaScopeLabel && (
+                  <div className="flex items-center justify-between gap-4 rounded-md bg-black/[0.16] px-3 py-2">
+                    <span className="text-[#7f8d86]">额度口径</span>
+                    <span className="min-w-0 truncate text-right text-[#d8cfb7]">{quotaScopeLabel}</span>
                   </div>
                 )}
 
@@ -220,7 +237,7 @@ export default function AccountsPage() {
                   <div className="border-t border-white/10 pt-3">
                     <div className="mb-2 inline-flex items-center gap-2 text-[#7f8d86]">
                       <Gauge className="h-3.5 w-3.5" />
-                      额度
+                      {quotaScopeLabel ? '账号级额度' : '额度'}
                     </div>
                     <div className="space-y-2 text-[#d8cfb7]">
                       {rateLimitLines.map((item) => (

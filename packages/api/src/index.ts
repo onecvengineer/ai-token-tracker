@@ -34,8 +34,7 @@ app.post('/api/sync', async (c) => {
         continue;
       }
       const data = await collector.collect();
-      repo.upsertRecords(data.records);
-      repo.upsertDailyUsage(data.dailyUsage);
+      repo.replaceUsageForSource(source as Source, data.records, data.dailyUsage);
       repo.updateSyncState(source as Source, data.records.length);
       results[source] = { success: true, records: data.records.length };
     } catch (err: any) {

@@ -12,6 +12,8 @@ export interface AccountListItem {
   planType: string;
   isActive: boolean;
   status: 'active' | 'inactive' | 'unknown';
+  quotaScope?: 'client' | 'account';
+  quotaProvider?: string;
   rateLimits?: BalanceRateLimits;
   manageable: boolean;
 }
@@ -86,6 +88,8 @@ export async function listAccounts(options?: {
       planType: balance.rateLimits?.planType || '-',
       isActive: balance.status === 'active',
       status: balance.status,
+      quotaScope: balance.quotaScope,
+      quotaProvider: balance.quotaProvider,
       rateLimits: balance.rateLimits,
       manageable: false,
     })));

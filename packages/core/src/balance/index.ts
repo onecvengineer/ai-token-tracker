@@ -22,6 +22,8 @@ export interface BalanceResult {
   accountName: string;
   model: string;
   status: 'active' | 'inactive' | 'unknown';
+  quotaScope?: 'client' | 'account';
+  quotaProvider?: string;
   rateLimits?: BalanceRateLimits;
   balanceInfo?: {
     balance: number;
@@ -315,6 +317,8 @@ async function getClaudeCodeBalance(): Promise<BalanceResult> {
         accountName: 'zhipu',
         model,
         status: hasToken ? 'active' : 'unknown',
+        quotaScope: 'account',
+        quotaProvider: 'zhipu',
         rateLimits: tokensLimit ? {
           planType: quota?.level ?? null,
           primaryUsedPercent: tokensLimit.percentage ?? null,

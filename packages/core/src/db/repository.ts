@@ -158,6 +158,47 @@ export class Repository {
     tx(entries);
   }
 
+  replaceUsageForSource(source: Source, records: UsageRecord[], entries: DailyUsage[]): void {
+    const deleteRecords = this.sqlite.prepare('DELETE FROM usage_records WHERE source = ?');
+    const deleteDailyUsage = this.sqlite.prepare('DELETE FROM daily_usage WHERE source = ?');
+    const insertRecord = this.sqlite.prepare(`
+      INSERT OR REPLACE INTO usage_records
+      (id, source, model, input_tokens, output_tokens, cache_read_tokens, total_tokens, cost_usd, session_id, usage_date, recorded_at, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const insertDailyUsage = this.sqlite.prepare(`
+      INSERT OR REPLACE INTO daily_usage
+      (id, date, source, model, input_tokens, output_tokens, cache_read_tokens, total_tokens, cost_usd, message_count, session_count, tool_call_count)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const tx = this.sqlite.transaction((recordRows: UsageRecord[], dailyRows: DailyUsage[]) => {
+      deleteRecords.run(source);
+      deleteDailyUsage.run(source);
+
+      for (const r of recordRows) {
+        const model = normalizeModel(r.model);
+        insertRecord.run(
+          r.id, r.source, model, r.inputTokens, r.outputTokens,
+          r.cacheReadTokens, r.totalTokens, r.costUSD, r.sessionId,
+          r.usageDate, r.recordedAt, r.metadata ? JSON.stringify(r.metadata) : null
+        );
+      }
+
+      for (const r of dailyRows) {
+        const model = normalizeModel(r.model);
+        const id = `${r.date}-${r.source}-${model}`;
+        insertDailyUsage.run(
+          id, r.date, r.source, model, r.inputTokens, r.outputTokens,
+          r.cacheReadTokens, r.totalTokens, r.costUSD, r.messageCount,
+          r.sessionCount, r.toolCallCount
+        );
+      }
+    });
+
+    tx(records, entries);
+  }
+
   updateSyncState(source: Source, count: number): void {
     this.sqlite.prepare(`
       INSERT OR REPLACE INTO sync_state (source, last_sync_at, record_count)

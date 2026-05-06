@@ -27,12 +27,15 @@ async function renderAccountsList(opts: { source?: string }): Promise<void> {
   });
 
   for (const item of result.items) {
+    const plan = item.planType !== '-'
+      ? `${item.planType}${item.quotaScope === 'account' ? ` (${item.quotaProvider || 'account'} account-wide)` : ''}`
+      : '-';
     table.push([
       item.source,
       item.name,
       item.email,
       item.model !== '-' ? chalk.cyan(item.model) : '-',
-      item.planType !== '-' ? chalk.cyan(item.planType) : '-',
+      plan !== '-' ? chalk.cyan(plan) : '-',
       formatRateLimit(item.rateLimits),
       formatStatus(item.status, item.isActive),
     ]);

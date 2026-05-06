@@ -20,12 +20,15 @@ Examples:
       });
 
       for (const balance of balances) {
+        const scopePrefix = balance.quotaScope === 'account'
+          ? `Scope: account-wide${balance.quotaProvider ? ` (${balance.quotaProvider})` : ''}\n`
+          : '';
         const planPrefix = balance.rateLimits?.planType ? `Plan: ${balance.rateLimits.planType}\n` : '';
         table.push([
           balance.source,
           balance.accountName,
           balance.model !== '-' ? chalk.cyan(balance.model) : '-',
-          planPrefix ? planPrefix + formatRateLimit(balance.rateLimits) : formatRateLimit(balance.rateLimits),
+          scopePrefix + (planPrefix ? planPrefix + formatRateLimit(balance.rateLimits) : formatRateLimit(balance.rateLimits)),
           formatStatus(balance.status),
         ]);
       }

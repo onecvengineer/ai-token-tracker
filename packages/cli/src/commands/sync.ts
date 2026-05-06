@@ -31,8 +31,7 @@ Examples:
           }
           spinner.text = `Syncing ${source}...`;
           const data = await collector.collect();
-          repo.upsertRecords(data.records);
-          repo.upsertDailyUsage(data.dailyUsage);
+          repo.replaceUsageForSource(source as Source, data.records, data.dailyUsage);
           repo.updateSyncState(source as Source, data.records.length);
           spinner.succeed(`${source}: ${data.records.length} records synced`);
           spinner = ora();
