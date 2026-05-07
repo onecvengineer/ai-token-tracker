@@ -1,6 +1,6 @@
 'use client';
 
-import { CheckCircle2, Gauge, KeyRound, RefreshCw, Repeat2, Server, ShieldAlert, UserRound } from 'lucide-react';
+import { CheckCircle2, ChevronDown, Gauge, KeyRound, Plus, RefreshCw, Repeat2, Server, ShieldAlert, UserRound, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { fetchAPI } from '../../lib/api';
 
@@ -20,6 +20,8 @@ interface AgentBalance {
   quotaScope?: 'client' | 'account';
   quotaProvider?: string;
   rateLimits?: BalanceRateLimits;
+  balance?: number | null;
+  balanceUnit?: string;
 }
 
 interface RateLimitItem {
@@ -33,6 +35,15 @@ interface CodexAccount {
   name: string;
   isActive: boolean;
   email: string;
+}
+
+interface ClaudeProvider {
+  id: string;
+  name: string;
+  baseUrl: string;
+  authType: 'auth-token' | 'api-key';
+  isActive: boolean;
+  models: { sonnet?: string; opus?: string; haiku?: string };
 }
 
 function getBalanceKey(balance: AgentBalance, index: number): string {
@@ -88,18 +99,66 @@ function formatQuotaScope(balance: AgentBalance): string | null {
   return `${balance.quotaProvider || balance.accountName} 账号级`;
 }
 
+function formatProviderAuth(authType: ClaudeProvider['authType']): string {
+  return authType === 'api-key' ? 'X-Api-Key' : 'Bearer Token';
+}
+
+function getProviderModel(provider: ClaudeProvider | undefined): string {
+  if (!provider) return '-';
+  return provider.models.sonnet || provider.models.opus || provider.models.haiku || '-';
+}
+
 export default function AccountsPage() {
   const [balances, setBalances] = useState<AgentBalance[]>([]);
   const [codexAccounts, setCodexAccounts] = useState<CodexAccount[]>([]);
+  const [claudeProviders, setClaudeProviders] = useState<ClaudeProvider[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showProviderManager, setShowProviderManager] = useState(false);
+  const [showAddProvider, setShowAddProvider] = useState(false);
+  const [addForm, setAddForm] = useState({
+    name: '',
+    apiKey: '',
+    baseUrl: '',
+    authType: 'auth-token' as 'auth-token' | 'api-key',
+    model: '',
+  });
+  const [addError, setAddError] = useState('');
+  const [adding, setAdding] = useState(false);
+
+  const PRESET_PROVIDERS: Array<{
+    name: string;
+    label: string;
+    baseUrl: string;
+    authType: 'auth-token' | 'api-key';
+    model: string;
+  }> = [
+    { name: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com', authType: 'auth-token', model: 'deepseek-chat' },
+    { name: 'glm', label: '智谱 GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', authType: 'auth-token', model: 'glm-4-plus' },
+    { name: 'anthropic', label: 'Anthropic', baseUrl: '', authType: 'api-key', model: '' },
+  ];
+
+  const applyPreset = (presetName: string) => {
+    const preset = PRESET_PROVIDERS.find((p) => p.name === presetName);
+    if (preset) {
+      setAddForm((f) => ({
+        ...f,
+        name: preset.name,
+        baseUrl: preset.baseUrl,
+        authType: preset.authType,
+        model: preset.model,
+      }));
+    }
+  };
 
   const loadData = async () => {
-    const [balanceData, codexData] = await Promise.all([
+    const [balanceData, codexData, providerData] = await Promise.all([
       fetchAPI<AgentBalance[]>('/api/accounts/balance'),
       fetchAPI<CodexAccount[]>('/api/config/codex/accounts').catch(() => [] as CodexAccount[]),
+      fetchAPI<ClaudeProvider[]>('/api/config/claude/providers').catch(() => [] as ClaudeProvider[]),
     ]);
     setBalances(balanceData);
     setCodexAccounts(codexData);
+    setClaudeProviders(providerData);
   };
 
   useEffect(() => {
@@ -110,13 +169,58 @@ export default function AccountsPage() {
       .catch(() => setLoading(false));
   }, []);
 
-  const switchAccount = async (name: string) => {
+  const switchCodexAccount = async (name: string) => {
     await fetchAPI('/api/config/codex/accounts/switch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
     });
     await loadData();
+  };
+
+  const switchClaudeProvider = async (name: string) => {
+    await fetchAPI('/api/config/claude/providers/switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    await loadData();
+  };
+
+  const removeClaudeProvider = async (name: string) => {
+    await fetchAPI(`/api/config/claude/providers/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    await loadData();
+  };
+
+  const handleAddProvider = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!addForm.name.trim() || !addForm.apiKey.trim()) {
+      setAddError('名称和 API Key 为必填');
+      return;
+    }
+    setAdding(true);
+    setAddError('');
+    try {
+      await fetchAPI('/api/config/claude/providers/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: addForm.name.trim(),
+          apiKey: addForm.apiKey.trim(),
+          baseUrl: addForm.baseUrl.trim() || undefined,
+          authType: addForm.authType,
+          sonnetModel: addForm.model.trim() || undefined,
+        }),
+      });
+      setShowAddProvider(false);
+      setShowProviderManager(false);
+      setAddForm({ name: '', apiKey: '', baseUrl: '', authType: 'auth-token', model: '' });
+      await loadData();
+    } catch (err: any) {
+      setAddError(err.message || '添加失败');
+    } finally {
+      setAdding(false);
+    }
   };
 
   if (loading) {
@@ -132,6 +236,229 @@ export default function AccountsPage() {
 
   const activeCount = balances.filter((balance) => balance.status === 'active').length;
   const subscriptionCount = balances.filter((balance) => !!balance.rateLimits?.planType || formatRateLimit(balance.rateLimits).length > 0).length;
+  const activeClaudeProvider = claudeProviders.find((provider) => provider.isActive);
+  const providerSummaryName = activeClaudeProvider?.name || (claudeProviders.length > 0 ? '未启用' : '未配置');
+  const providerSummaryMeta = activeClaudeProvider
+    ? `${formatProviderAuth(activeClaudeProvider.authType)} · ${getProviderModel(activeClaudeProvider)}`
+    : claudeProviders.length > 0
+      ? `${claudeProviders.length} 个服务商`
+      : '添加后可快速切换 Claude Code 服务商';
+
+  const providerManagerSection = (
+    <section className="app-panel rounded-lg px-4 py-3">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-[#eaa568]/20 bg-[#eaa568]/10 text-[#eaa568]">
+            <KeyRound className="h-4 w-4" />
+          </div>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-medium text-[#eaa568]">Claude Code 服务商</span>
+              {activeClaudeProvider && (
+                <span className="rounded-full border border-[#86b86f]/25 bg-[#86b86f]/10 px-2 py-0.5 text-[10px] font-medium text-[#b7dda8]">
+                  使用中
+                </span>
+              )}
+            </div>
+            <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[#7f8d86]">
+              <span className="font-medium text-[#f4f1e8]">{providerSummaryName}</span>
+              <span className="truncate">{providerSummaryMeta}</span>
+            </div>
+          </div>
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <button
+            onClick={() => {
+              setShowProviderManager((value) => !value);
+              if (showProviderManager) {
+                setShowAddProvider(false);
+                setAddError('');
+              }
+            }}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-[#9ba8a0] transition-colors hover:bg-white/[0.08] hover:text-[#f4f1e8]"
+          >
+            管理
+            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showProviderManager ? 'rotate-180' : ''}`} />
+          </button>
+          <button
+            onClick={() => {
+              setShowProviderManager(true);
+              setShowAddProvider(true);
+            }}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-[#d5a348]/30 bg-[#d5a348]/10 px-3 py-1.5 text-xs font-medium text-[#f0bf5d] transition-colors hover:bg-[#d5a348]/[0.16]"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            添加服务商
+          </button>
+        </div>
+      </div>
+
+      {showProviderManager && (
+        <div className="mt-4 border-t border-white/10 pt-4">
+          {claudeProviders.length > 0 ? (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {claudeProviders.map((provider) => {
+                const isActiveProvider = provider.isActive;
+                const statusStyle = isActiveProvider
+                  ? { dot: 'bg-[#86b86f]', badge: 'border-[#86b86f]/30 bg-[#86b86f]/10 text-[#b7dda8]' }
+                  : { dot: 'bg-[#7f8d86]', badge: 'border-white/10 bg-white/[0.04] text-[#9ba8a0]' };
+
+                return (
+                  <div key={provider.id} className={`rounded-lg border p-3 ${isActiveProvider ? 'border-[#86b86f]/20 bg-[#86b86f]/[0.04]' : 'border-white/10 bg-black/[0.12]'}`}>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <div className={`h-2 w-2 shrink-0 rounded-full ${statusStyle.dot}`} />
+                        <span className="truncate text-sm font-semibold text-[#fff9ea]">{provider.name}</span>
+                      </div>
+                      <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium ${statusStyle.badge}`}>
+                        {isActiveProvider ? '使用中' : '未启用'}
+                      </span>
+                    </div>
+
+                    <div className="mt-3 space-y-1.5 text-xs text-[#7f8d86]">
+                      <div className="flex justify-between gap-3">
+                        <span>认证</span>
+                        <span className="truncate text-[#d8cfb7]">{formatProviderAuth(provider.authType)}</span>
+                      </div>
+                      {provider.baseUrl && (
+                        <div className="flex justify-between gap-3">
+                          <span>Base URL</span>
+                          <span className="truncate text-[#d8cfb7]">{provider.baseUrl}</span>
+                        </div>
+                      )}
+                      {getProviderModel(provider) !== '-' && (
+                        <div className="flex justify-between gap-3">
+                          <span>模型</span>
+                          <span className="truncate text-[#d8cfb7]">{getProviderModel(provider)}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {!isActiveProvider && (
+                      <div className="mt-3 flex gap-2">
+                        <button
+                          onClick={() => switchClaudeProvider(provider.id)}
+                          className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border border-[#d5a348]/30 bg-[#d5a348]/10 px-2 py-1.5 text-xs font-medium text-[#f0bf5d] transition-colors hover:bg-[#d5a348]/[0.16]"
+                        >
+                          <Repeat2 className="h-3 w-3" />
+                          切换
+                        </button>
+                        <button
+                          onClick={() => removeClaudeProvider(provider.id)}
+                          className="inline-flex items-center justify-center rounded-md border border-[#ef6b5d]/20 bg-transparent px-2 py-1.5 text-xs text-[#ef6b5d]/70 transition-colors hover:bg-[#ef6b5d]/10 hover:text-[#ef6b5d]"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="rounded-lg border border-white/10 bg-black/[0.12] px-3 py-2 text-sm text-[#7f8d86]">
+              暂无配置的服务商。
+            </div>
+          )}
+
+          {showAddProvider && (
+            <div className="mt-4 rounded-lg border border-[#d5a348]/20 bg-black/[0.16] p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <span className="text-sm font-medium text-[#f4f1e8]">添加新服务商</span>
+                <button onClick={() => { setShowAddProvider(false); setAddError(''); }} className="text-[#7f8d86] hover:text-[#f4f1e8]">
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="mb-3 flex flex-wrap gap-2">
+                {PRESET_PROVIDERS.map((preset) => (
+                  <button
+                    key={preset.name}
+                    type="button"
+                    onClick={() => applyPreset(preset.name)}
+                    className="rounded-md border border-white/10 bg-white/[0.04] px-2.5 py-1 text-xs text-[#9ba8a0] transition-colors hover:bg-white/[0.08] hover:text-[#f4f1e8]"
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+              <form onSubmit={handleAddProvider} className="space-y-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-xs text-[#7f8d86]">名称 *</label>
+                    <input
+                      type="text"
+                      value={addForm.name}
+                      onChange={(e) => setAddForm((f) => ({ ...f, name: e.target.value }))}
+                      placeholder="deepseek"
+                      className="w-full rounded-md border border-white/10 bg-black/[0.24] px-3 py-2 text-sm text-[#f4f1e8] placeholder-[#7f8d86]/60 outline-none focus:border-[#d5a348]/40"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs text-[#7f8d86]">API Key *</label>
+                    <input
+                      type="password"
+                      value={addForm.apiKey}
+                      onChange={(e) => setAddForm((f) => ({ ...f, apiKey: e.target.value }))}
+                      placeholder="sk-..."
+                      className="w-full rounded-md border border-white/10 bg-black/[0.24] px-3 py-2 text-sm text-[#f4f1e8] placeholder-[#7f8d86]/60 outline-none focus:border-[#d5a348]/40"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs text-[#7f8d86]">Base URL</label>
+                    <input
+                      type="text"
+                      value={addForm.baseUrl}
+                      onChange={(e) => setAddForm((f) => ({ ...f, baseUrl: e.target.value }))}
+                      placeholder="https://api.deepseek.com"
+                      className="w-full rounded-md border border-white/10 bg-black/[0.24] px-3 py-2 text-sm text-[#f4f1e8] placeholder-[#7f8d86]/60 outline-none focus:border-[#d5a348]/40"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs text-[#7f8d86]">认证方式</label>
+                    <select
+                      value={addForm.authType}
+                      onChange={(e) => setAddForm((f) => ({ ...f, authType: e.target.value as 'auth-token' | 'api-key' }))}
+                      className="w-full rounded-md border border-white/10 bg-black/[0.24] px-3 py-2 text-sm text-[#f4f1e8] outline-none focus:border-[#d5a348]/40"
+                    >
+                      <option value="auth-token">Bearer Token</option>
+                      <option value="api-key">X-Api-Key</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs text-[#7f8d86]">模型</label>
+                    <input
+                      type="text"
+                      value={addForm.model}
+                      onChange={(e) => setAddForm((f) => ({ ...f, model: e.target.value }))}
+                      placeholder="deepseek-chat"
+                      className="w-full rounded-md border border-white/10 bg-black/[0.24] px-3 py-2 text-sm text-[#f4f1e8] placeholder-[#7f8d86]/60 outline-none focus:border-[#d5a348]/40"
+                    />
+                  </div>
+                </div>
+                {addError && <div className="text-xs text-[#ef6b5d]">{addError}</div>}
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => { setShowAddProvider(false); setAddError(''); }}
+                    className="rounded-md border border-white/10 bg-transparent px-4 py-2 text-sm text-[#9ba8a0] transition-colors hover:bg-white/[0.04]"
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={adding}
+                    className="rounded-md border border-[#d5a348]/30 bg-[#d5a348]/10 px-4 py-2 text-sm font-medium text-[#f0bf5d] transition-colors hover:bg-[#d5a348]/[0.16] disabled:opacity-50"
+                  >
+                    {adding ? '添加中...' : '添加'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
 
   return (
     <div className="space-y-6">
@@ -233,6 +560,14 @@ export default function AccountsPage() {
                   </div>
                 )}
 
+                {/* Balance display for providers with monetary balance (DeepSeek, Zhipu) */}
+                {balance.balance != null && balance.balanceUnit && balance.balanceUnit !== 'tokens' && (
+                  <div className="flex items-center justify-between gap-4 rounded-md bg-[#86b86f]/[0.08] px-3 py-2">
+                    <span className="text-[#7f8d86]">余额</span>
+                    <span className="tabular font-semibold text-[#86b86f]">{balance.balance.toFixed(2)} {balance.balanceUnit}</span>
+                  </div>
+                )}
+
                 {hasSubscription && rateLimitLines.length > 0 && (
                   <div className="border-t border-white/10 pt-3">
                     <div className="mb-2 inline-flex items-center gap-2 text-[#7f8d86]">
@@ -270,7 +605,7 @@ export default function AccountsPage() {
                 {canSwitch && (
                   <div className="border-t border-white/10 pt-3">
                     <button
-                      onClick={() => switchAccount(codexAlias)}
+                      onClick={() => switchCodexAccount(codexAlias)}
                       className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-[#d5a348]/30 bg-[#d5a348]/10 px-3 py-2 text-sm font-medium text-[#f0bf5d] transition-colors hover:bg-[#d5a348]/[0.16]"
                     >
                       <Repeat2 className="h-4 w-4" />
@@ -286,6 +621,8 @@ export default function AccountsPage() {
       {balances.length === 0 && (
         <div className="app-panel rounded-lg p-8 text-center text-sm text-[#9ba8a0]">未检测到账号。</div>
       )}
+
+      {providerManagerSection}
     </div>
   );
 }

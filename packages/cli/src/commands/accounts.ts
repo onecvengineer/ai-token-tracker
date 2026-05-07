@@ -56,6 +56,8 @@ Examples:
   att accounts switch my-work --source codex
   att accounts add my-alt --source codex --access-token "eyJ..." --id-token "eyJ..."
   att accounts verify my-alt --source codex
+  att accounts add deepseek --source claude-code --api-key "sk-..." --base-url "https://api.deepseek.com" --auth-type auth-token
+  att accounts switch deepseek --source claude-code
 `)
     .action(withErrorHandling(async (opts) => {
       await renderAccountsList(opts);
@@ -82,20 +84,45 @@ Examples:
   accountsCmd
     .command('add <name>')
     .description('Add a new account')
-    .requiredOption('--access-token <token>', 'Access token')
-    .option('--id-token <token>', 'ID token')
-    .option('--refresh-token <token>', 'Refresh token')
-    .option('--account-id <id>', 'Account ID')
+    .option('--access-token <token>', 'Access token (Codex)')
+    .option('--id-token <token>', 'ID token (Codex)')
+    .option('--refresh-token <token>', 'Refresh token (Codex)')
+    .option('--account-id <id>', 'Account ID (Codex)')
+    .option('--api-key <key>', 'API key (Claude Code provider)')
+    .option('--base-url <url>', 'Base URL (Claude Code provider)')
+    .option('--auth-type <type>', 'Claude Code auth type: auth-token or api-key')
+    .option('--model-sonnet <model>', 'Sonnet model override (Claude Code provider)')
+    .option('--model-opus <model>', 'Opus model override (Claude Code provider)')
+    .option('--model-haiku <model>', 'Haiku model override (Claude Code provider)')
     .option('--source <source>', 'Source for account mutation', 'codex')
     .action(withErrorHandling(async (name, opts) => {
       const source = parseSource(opts.source, 'codex');
-      await addAccount(name, {
-        auth_mode: 'chatgpt',
-        access_token: opts.accessToken,
-        id_token: opts.idToken,
-        refresh_token: opts.refreshToken,
-        account_id: opts.accountId,
-      }, { source });
+
+      if (source === 'claude-code') {
+        if (!opts.apiKey) {
+          throw new Error('--api-key is required for Claude Code provider');
+        }
+        await addAccount(name, {
+          name,
+          apiKey: opts.apiKey,
+          baseUrl: opts.baseUrl || '',
+          authType: opts.authType,
+          sonnetModel: opts.modelSonnet || undefined,
+          opusModel: opts.modelOpus || undefined,
+          haikuModel: opts.modelHaiku || undefined,
+        }, { source });
+      } else {
+        if (!opts.accessToken) {
+          throw new Error('--access-token is required for Codex');
+        }
+        await addAccount(name, {
+          auth_mode: 'chatgpt',
+          access_token: opts.accessToken,
+          id_token: opts.idToken,
+          refresh_token: opts.refreshToken,
+          account_id: opts.accountId,
+        }, { source });
+      }
       console.log(chalk.green(`Account "${name}" added (${source})`));
     }));
 

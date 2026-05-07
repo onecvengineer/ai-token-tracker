@@ -6,6 +6,7 @@ import http from 'node:http';
 import https from 'node:https';
 import tls from 'node:tls';
 import type { Source } from '../collectors/types.js';
+import { ClaudeProviderConfig } from '../config/claude-providers.js';
 
 export interface BalanceRateLimits {
   planType: string | null;
@@ -290,10 +291,66 @@ async function getClaudeCodeBalance(): Promise<BalanceResult> {
 
   try {
     const settings = JSON.parse(await readFile(settingsPath, 'utf-8'));
+    const activeProvider = await new ClaudeProviderConfig().getActiveProviderEntry().catch(() => null);
+    const provider = activeProvider?.provider;
     const authToken = settings.env?.ANTHROPIC_AUTH_TOKEN || settings.env?.ANTHROPIC_API_KEY;
     const hasToken = !!authToken;
-    const model = settings.env?.ANTHROPIC_DEFAULT_SONNET_MODEL || settings.env?.ANTHROPIC_DEFAULT_OPUS_MODEL || '-';
+    const model = provider?.models.sonnet
+      || provider?.models.opus
+      || provider?.models.haiku
+      || settings.env?.ANTHROPIC_DEFAULT_SONNET_MODEL
+      || settings.env?.ANTHROPIC_DEFAULT_OPUS_MODEL
+      || settings.env?.ANTHROPIC_DEFAULT_HAIKU_MODEL
+      || '-';
     const baseUrl = settings.env?.ANTHROPIC_BASE_URL || '';
+    const accountName = provider?.name || activeProvider?.id || 'default';
+
+    // If using DeepSeek provider, query their balance API
+    if (baseUrl.includes('deepseek.com') && authToken) {
+      try {
+        const resp = await fetch('https://api.deepseek.com/user/balance', {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (resp.ok) {
+          const data = await resp.json() as {
+            is_available: boolean;
+            balance_infos: Array<{
+              currency: string;
+              total_balance: string;
+              granted_balance: string;
+              topped_up_balance: string;
+            }>;
+          };
+          const primary = data.balance_infos?.[0];
+          if (primary) {
+            const totalBalance = parseFloat(primary.total_balance) || 0;
+            const granted = parseFloat(primary.granted_balance) || 0;
+            const toppedUp = parseFloat(primary.topped_up_balance) || 0;
+            return {
+              balance: totalBalance,
+              balanceUnit: primary.currency === 'CNY' ? 'CNY' : 'USD',
+              source: 'claude-code',
+              accountName,
+              model,
+              status: data.is_available ? 'active' : 'inactive',
+              balanceInfo: {
+                balance: totalBalance,
+                totalSpend: granted + toppedUp - totalBalance,
+                rechargeAmount: toppedUp,
+              },
+            };
+          }
+        }
+      } catch {}
+      return {
+        balance: null,
+        balanceUnit: 'CNY',
+        source: 'claude-code',
+        accountName,
+        model,
+        status: hasToken ? 'active' : 'unknown',
+      };
+    }
 
     // If using Zhipu (智谱) proxy, query their API for quota and balance
     if (baseUrl.includes('bigmodel.cn') && authToken) {
@@ -314,7 +371,7 @@ async function getClaudeCodeBalance(): Promise<BalanceResult> {
         balance: bal?.availableBalance ?? null,
         balanceUnit: 'CNY',
         source: 'claude-code',
-        accountName: 'zhipu',
+        accountName,
         model,
         status: hasToken ? 'active' : 'unknown',
         quotaScope: 'account',
@@ -338,7 +395,7 @@ async function getClaudeCodeBalance(): Promise<BalanceResult> {
       balance: null,
       balanceUnit: 'tokens',
       source: 'claude-code',
-      accountName: 'default',
+      accountName,
       model,
       status: hasToken ? 'active' : 'unknown',
     };

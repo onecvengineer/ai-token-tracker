@@ -1,4 +1,5 @@
 import { CodexConfig } from '../config/codex.js';
+import { ClaudeProviderConfig } from '../config/claude-providers.js';
 import { getBalancesBySource, getCodexAccountStatuses } from '../balance/index.js';
 import type { BalanceRateLimits } from '../balance/index.js';
 import type { Source } from '../collectors/types.js';
@@ -76,7 +77,7 @@ export async function listAccounts(options?: {
     }));
   }
 
-  const singleAccountSources = (['claude-code', 'hermes'] as const).filter((candidate) => !source || source === candidate);
+  const singleAccountSources = (['hermes'] as const).filter((candidate) => !source || source === candidate);
   if (singleAccountSources.length > 0) {
     const balances = await getBalancesBySource(singleAccountSources);
     items.push(...balances.map((balance) => ({
@@ -95,6 +96,46 @@ export async function listAccounts(options?: {
     })));
   }
 
+  // Claude Code: show providers from claude-providers.json
+  if (!source || source === 'claude-code') {
+    const providerConfig = new ClaudeProviderConfig();
+    const providers = await providerConfig.listProvidersWithStatus();
+    const [balanceResult] = await getBalancesBySource(['claude-code']);
+
+    if (providers.length > 0) {
+      items.push(...providers.map((provider) => ({
+        source: 'claude-code' as const,
+        id: `claude-code:${provider.id}`,
+        name: provider.name,
+        email: '-',
+        model: provider.models.sonnet || provider.models.opus || '-',
+        planType: provider.authType === 'api-key' ? 'API Key' : 'Bearer Token',
+        isActive: provider.isActive,
+        status: provider.isActive ? (balanceResult?.status ?? 'unknown') : 'inactive',
+        quotaScope: balanceResult?.quotaScope,
+        quotaProvider: balanceResult?.quotaProvider,
+        rateLimits: provider.isActive ? balanceResult?.rateLimits : undefined,
+        manageable: true,
+      })));
+    } else {
+      // No providers configured yet, show single balance entry
+      items.push({
+        source: 'claude-code' as const,
+        id: 'claude-code:default',
+        name: balanceResult?.accountName || 'default',
+        email: '-',
+        model: balanceResult?.model || '-',
+        planType: balanceResult?.rateLimits?.planType || '-',
+        isActive: balanceResult?.status === 'active',
+        status: balanceResult?.status || 'unknown',
+        quotaScope: balanceResult?.quotaScope,
+        quotaProvider: balanceResult?.quotaProvider,
+        rateLimits: balanceResult?.rateLimits,
+        manageable: false,
+      });
+    }
+  }
+
   const sourceOrder: Source[] = ['claude-code', 'codex', 'hermes'];
   items.sort((a, b) => {
     const sourceDiff = sourceOrder.indexOf(a.source) - sourceOrder.indexOf(b.source);
@@ -107,6 +148,11 @@ export async function listAccounts(options?: {
 }
 
 export async function switchAccount(name: string, options?: AccountMutationOptions): Promise<void> {
+  if (options?.source === 'claude-code') {
+    const config = new ClaudeProviderConfig();
+    await config.switchAccount(name);
+    return;
+  }
   requireCodexSource(options?.source);
   const config = new CodexConfig();
   await config.switchAccount(name);
@@ -117,12 +163,22 @@ export async function addAccount(
   configValues: Record<string, unknown>,
   options?: AccountMutationOptions,
 ): Promise<void> {
+  if (options?.source === 'claude-code') {
+    const config = new ClaudeProviderConfig();
+    await config.addAccount(name, configValues);
+    return;
+  }
   requireCodexSource(options?.source);
   const config = new CodexConfig();
   await config.addAccount(name, configValues);
 }
 
 export async function removeAccount(name: string, options?: AccountMutationOptions): Promise<void> {
+  if (options?.source === 'claude-code') {
+    const config = new ClaudeProviderConfig();
+    await config.removeAccount(name);
+    return;
+  }
   requireCodexSource(options?.source);
   const config = new CodexConfig();
   await config.removeAccount(name);
@@ -135,6 +191,10 @@ export async function renameAccount(oldName: string, newName: string, options?: 
 }
 
 export async function verifyAccount(name: string, options?: AccountMutationOptions): Promise<boolean> {
+  if (options?.source === 'claude-code') {
+    const config = new ClaudeProviderConfig();
+    return config.verifyAccount(name);
+  }
   requireCodexSource(options?.source);
   const config = new CodexConfig();
   return config.verifyAccount(name);

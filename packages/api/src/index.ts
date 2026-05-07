@@ -3,7 +3,7 @@ import { cors } from 'hono/cors';
 import { serve } from '@hono/node-server';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ClaudeCodeCollector, CodexCollector, HermesCollector, Repository, getAllBalances, ClaudeCodeConfig, CodexConfig, resolveUsageWindow } from '@att/core';
+import { ClaudeCodeCollector, CodexCollector, HermesCollector, Repository, getAllBalances, ClaudeCodeConfig, ClaudeProviderConfig, CodexConfig, resolveUsageWindow } from '@att/core';
 import type { Source } from '@att/core';
 
 const app = new Hono();
@@ -177,6 +177,42 @@ app.post('/api/config/codex/accounts/switch', async (c) => {
 
 app.delete('/api/config/codex/accounts/:name', async (c) => {
   const config = new CodexConfig();
+  await config.removeAccount(c.req.param('name'));
+  return c.json({ success: true });
+});
+
+// ========== Claude Code Providers ==========
+
+app.get('/api/config/claude/providers', async (c) => {
+  const config = new ClaudeProviderConfig();
+  const providers = await config.listProvidersWithStatus();
+  return c.json(providers);
+});
+
+app.post('/api/config/claude/providers/add', async (c) => {
+  const body = await c.req.json<{ name: string; apiKey: string; baseUrl?: string; authType?: 'auth-token' | 'api-key'; sonnetModel?: string; opusModel?: string; haikuModel?: string }>();
+  const config = new ClaudeProviderConfig();
+  await config.addAccount(body.name, {
+    name: body.name,
+    apiKey: body.apiKey,
+    baseUrl: body.baseUrl || '',
+    authType: body.authType,
+    sonnetModel: body.sonnetModel,
+    opusModel: body.opusModel,
+    haikuModel: body.haikuModel,
+  });
+  return c.json({ success: true });
+});
+
+app.post('/api/config/claude/providers/switch', async (c) => {
+  const body = await c.req.json<{ name: string }>();
+  const config = new ClaudeProviderConfig();
+  await config.switchAccount(body.name);
+  return c.json({ success: true });
+});
+
+app.delete('/api/config/claude/providers/:name', async (c) => {
+  const config = new ClaudeProviderConfig();
   await config.removeAccount(c.req.param('name'));
   return c.json({ success: true });
 });

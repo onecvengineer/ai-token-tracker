@@ -3,6 +3,8 @@ export { ClaudeCodeCollector, CodexCollector, HermesCollector } from './collecto
 export type { ICollector, CollectorResult, UsageRecord, DailyUsage, UsageSummary, AccountInfo, ModelOption, Source } from './collectors/types.js';
 export { Repository } from './db/repository.js';
 export { ClaudeCodeConfig } from './config/claude-code.js';
+export { ClaudeProviderConfig } from './config/claude-providers.js';
+export type { ProviderAuthType, ProviderConfig, ProviderModels, ProvidersData } from './config/claude-providers.js';
 export { CodexConfig } from './config/codex.js';
 export { getAllBalances, getBalancesBySource, getCodexAccountStatuses, fetchCodexRateLimits } from './balance/index.js';
 export type { BalanceResult, BalanceRateLimits, CodexAccountStatus } from './balance/index.js';
