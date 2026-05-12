@@ -30,57 +30,38 @@ export class Repository {
   }
 
   private migrate(): void {
-    this.sqlite.exec(`
-      CREATE TABLE IF NOT EXISTS usage_records (
-        id TEXT PRIMARY KEY,
-        source TEXT NOT NULL CHECK(source IN ('claude-code', 'codex', 'hermes')),
-        model TEXT NOT NULL,
-        input_tokens INTEGER NOT NULL DEFAULT 0,
-        output_tokens INTEGER NOT NULL DEFAULT 0,
-        cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-        total_tokens INTEGER NOT NULL DEFAULT 0,
-        cost_usd REAL,
-        session_id TEXT NOT NULL,
-        usage_date TEXT NOT NULL,
-        recorded_at TEXT NOT NULL,
-        metadata TEXT
-      );
+    // Always ensure tables exist first (IF NOT EXISTS)
+    this.createTables();
 
-      CREATE TABLE IF NOT EXISTS daily_usage (
-        id TEXT PRIMARY KEY,
-        date TEXT NOT NULL,
-        source TEXT NOT NULL CHECK(source IN ('claude-code', 'codex', 'hermes')),
-        model TEXT NOT NULL,
-        input_tokens INTEGER NOT NULL DEFAULT 0,
-        output_tokens INTEGER NOT NULL DEFAULT 0,
-        cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-        total_tokens INTEGER NOT NULL DEFAULT 0,
-        cost_usd REAL,
-        message_count INTEGER NOT NULL DEFAULT 0,
-        session_count INTEGER NOT NULL DEFAULT 0,
-        tool_call_count INTEGER NOT NULL DEFAULT 0
-      );
+    // Detect whether existing tables have the old 3-source CHECK constraint
+    // by inspecting the stored CREATE TABLE SQL.
+    const tableSql = this.sqlite.prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='usage_records'"
+    ).get() as { sql: string } | undefined;
 
-      CREATE TABLE IF NOT EXISTS sync_state (
-        source TEXT PRIMARY KEY CHECK(source IN ('claude-code', 'codex', 'hermes')),
-        last_sync_at TEXT NOT NULL,
-        record_count INTEGER NOT NULL DEFAULT 0
-      );
+    if (tableSql && !tableSql.sql.includes('opencode')) {
+      // Schema v1 → v2: rename old tables, recreate with new CHECK, copy data
+      const tables = ['usage_records', 'daily_usage', 'sync_state', 'accounts'] as const;
+      for (const table of tables) {
+        const oldName = `${table}_old_v1`;
+        this.sqlite.exec(`DROP TABLE IF EXISTS "${oldName}"`);
+        this.sqlite.exec(`ALTER TABLE "${table}" RENAME TO "${oldName}"`);
+      }
 
-      CREATE TABLE IF NOT EXISTS accounts (
-        id TEXT PRIMARY KEY,
-        source TEXT NOT NULL CHECK(source IN ('claude-code', 'codex', 'hermes')),
-        name TEXT NOT NULL,
-        is_active INTEGER NOT NULL DEFAULT 0,
-        config TEXT,
-        created_at TEXT NOT NULL
-      );
+      this.createTables();
 
-      CREATE INDEX IF NOT EXISTS idx_usage_date ON usage_records(usage_date);
-      CREATE INDEX IF NOT EXISTS idx_usage_source ON usage_records(source);
-      CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_usage(date);
-      CREATE INDEX IF NOT EXISTS idx_daily_source ON daily_usage(source);
-    `);
+      for (const table of tables) {
+        this.sqlite.exec(`INSERT INTO "${table}" SELECT * FROM "${table}_old_v1"`);
+        this.sqlite.exec(`DROP TABLE "${table}_old_v1"`);
+      }
+
+      // Renaming keeps the old index names attached to the _old_v1 tables.
+      // Re-run creation after dropping those tables so the indexes land on
+      // the replacement tables.
+      this.createTables();
+    }
+
+    this.sqlite.pragma('user_version = 2');
 
     // Older Claude syncs stored lifetime aggregates as dated usage records.
     // They corrupt any time-window query, so drop them on startup.
@@ -381,6 +362,60 @@ export class Repository {
 
   deleteAccount(id: string): void {
     this.sqlite.prepare('DELETE FROM accounts WHERE id = ?').run(id);
+  }
+
+  private createTables(): void {
+    this.sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS usage_records (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL CHECK(source IN ('claude-code', 'codex', 'hermes', 'opencode')),
+        model TEXT NOT NULL,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        cost_usd REAL,
+        session_id TEXT NOT NULL,
+        usage_date TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        metadata TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS daily_usage (
+        id TEXT PRIMARY KEY,
+        date TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('claude-code', 'codex', 'hermes', 'opencode')),
+        model TEXT NOT NULL,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        cost_usd REAL,
+        message_count INTEGER NOT NULL DEFAULT 0,
+        session_count INTEGER NOT NULL DEFAULT 0,
+        tool_call_count INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS sync_state (
+        source TEXT PRIMARY KEY CHECK(source IN ('claude-code', 'codex', 'hermes', 'opencode')),
+        last_sync_at TEXT NOT NULL,
+        record_count INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS accounts (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL CHECK(source IN ('claude-code', 'codex', 'hermes', 'opencode')),
+        name TEXT NOT NULL,
+        is_active INTEGER NOT NULL DEFAULT 0,
+        config TEXT,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_usage_date ON usage_records(usage_date);
+      CREATE INDEX IF NOT EXISTS idx_usage_source ON usage_records(source);
+      CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_usage(date);
+      CREATE INDEX IF NOT EXISTS idx_daily_source ON daily_usage(source);
+    `);
   }
 
   close(): void {

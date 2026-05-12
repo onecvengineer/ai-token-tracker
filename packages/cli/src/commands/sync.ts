@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
-import { ClaudeCodeCollector, CodexCollector, HermesCollector, Repository } from '@att/core';
+import { ClaudeCodeCollector, CodexCollector, HermesCollector, OpenCodeCollector, Repository } from '@att/core';
 import type { Source } from '@att/core';
 import { withErrorHandling } from './shared.js';
 
@@ -20,6 +20,7 @@ Examples:
         'claude-code': new ClaudeCodeCollector(),
         'codex': new CodexCollector(),
         'hermes': new HermesCollector(),
+        'opencode': new OpenCodeCollector(),
       };
 
       for (const [source, collector] of Object.entries(collectors)) {

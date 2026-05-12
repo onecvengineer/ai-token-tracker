@@ -153,6 +153,7 @@ export default function Dashboard() {
                 'claude-code': { dot: 'bg-[#eaa568]', tint: 'from-[#eaa568]/[0.18]', label: 'Claude Code' },
                 codex: { dot: 'bg-[#86b86f]', tint: 'from-[#86b86f]/[0.18]', label: 'Codex' },
                 hermes: { dot: 'bg-[#62c7c9]', tint: 'from-[#62c7c9]/[0.18]', label: 'Hermes' },
+                opencode: { dot: 'bg-[#7c5cfc]', tint: 'from-[#7c5cfc]/[0.18]', label: 'OpenCode' },
               };
               const color = colors[source] ?? { dot: 'bg-[#d5a348]', tint: 'from-[#d5a348]/[0.18]', label: source };
               const pct = summary.totalTokens > 0 ? Math.round((data.totalTokens / summary.totalTokens) * 100) : 0;

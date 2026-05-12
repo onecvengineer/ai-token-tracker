@@ -3,7 +3,7 @@ import { cors } from 'hono/cors';
 import { serve } from '@hono/node-server';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ClaudeCodeCollector, CodexCollector, HermesCollector, Repository, getAllBalances, ClaudeCodeConfig, ClaudeProviderConfig, CodexConfig, resolveUsageWindow } from '@att/core';
+import { ClaudeCodeCollector, CodexCollector, HermesCollector, OpenCodeCollector, Repository, getAllBalances, ClaudeCodeConfig, ClaudeProviderConfig, CodexConfig, resolveUsageWindow } from '@att/core';
 import type { Source } from '@att/core';
 
 const app = new Hono();
@@ -19,6 +19,7 @@ const collectors = {
   'claude-code': new ClaudeCodeCollector(),
   'codex': new CodexCollector(),
   'hermes': new HermesCollector(),
+  'opencode': new OpenCodeCollector(),
 };
 
 // ========== Sync ==========
@@ -221,7 +222,7 @@ app.delete('/api/config/claude/providers/:name', async (c) => {
 
 app.get('/api/sync/state', (c) => {
   const states: Record<string, any> = {};
-  for (const source of ['claude-code', 'codex', 'hermes'] as Source[]) {
+  for (const source of ['claude-code', 'codex', 'hermes', 'opencode'] as Source[]) {
     states[source] = repo.getSyncState(source);
   }
   return c.json(states);

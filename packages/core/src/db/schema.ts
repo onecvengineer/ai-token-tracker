@@ -2,7 +2,7 @@ import { sqliteTable, text, integer, real } from 'drizzle-orm/sqlite-core';
 
 export const usageRecords = sqliteTable('usage_records', {
   id: text('id').primaryKey(),
-  source: text('source', { enum: ['claude-code', 'codex', 'hermes'] }).notNull(),
+  source: text('source', { enum: ['claude-code', 'codex', 'hermes', 'opencode'] }).notNull(),
   model: text('model').notNull(),
   inputTokens: integer('input_tokens').notNull().default(0),
   outputTokens: integer('output_tokens').notNull().default(0),
@@ -18,7 +18,7 @@ export const usageRecords = sqliteTable('usage_records', {
 export const dailyUsage = sqliteTable('daily_usage', {
   id: text('id').primaryKey(), // date-source-model
   date: text('date').notNull(),
-  source: text('source', { enum: ['claude-code', 'codex', 'hermes'] }).notNull(),
+  source: text('source', { enum: ['claude-code', 'codex', 'hermes', 'opencode'] }).notNull(),
   model: text('model').notNull(),
   inputTokens: integer('input_tokens').notNull().default(0),
   outputTokens: integer('output_tokens').notNull().default(0),
@@ -31,14 +31,14 @@ export const dailyUsage = sqliteTable('daily_usage', {
 });
 
 export const syncState = sqliteTable('sync_state', {
-  source: text('source', { enum: ['claude-code', 'codex', 'hermes'] }).primaryKey(),
+  source: text('source', { enum: ['claude-code', 'codex', 'hermes', 'opencode'] }).primaryKey(),
   lastSyncAt: text('last_sync_at').notNull(),
   recordCount: integer('record_count').notNull().default(0),
 });
 
 export const accounts = sqliteTable('accounts', {
   id: text('id').primaryKey(),
-  source: text('source', { enum: ['claude-code', 'codex', 'hermes'] }).notNull(),
+  source: text('source', { enum: ['claude-code', 'codex', 'hermes', 'opencode'] }).notNull(),
   name: text('name').notNull(),
   isActive: integer('is_active', { mode: 'boolean' }).notNull().default(false),
   config: text('config'), // JSON string

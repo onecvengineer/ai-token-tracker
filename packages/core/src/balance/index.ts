@@ -252,7 +252,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 }
 
 export async function getAllBalances(): Promise<BalanceResult[]> {
-  return getBalancesBySource(['claude-code', 'codex', 'hermes']);
+  return getBalancesBySource(['claude-code', 'codex', 'hermes', 'opencode']);
 }
 
 export async function getBalancesBySource(sources: Source[]): Promise<BalanceResult[]> {
@@ -280,6 +280,8 @@ async function getBalanceBySource(source: Source): Promise<BalanceResult | Balan
       return getCodexBalances();
     case 'hermes':
       return getHermesBalance();
+    case 'opencode':
+      return getOpenCodeBalance();
   }
 }
 
@@ -926,6 +928,14 @@ export async function fetchCodexRateLimits(
   } catch {
     return undefined;
   }
+}
+
+async function getOpenCodeBalance(): Promise<BalanceResult> {
+  const dbPath = join(homedir(), '.local', 'share', 'opencode', 'opencode.db');
+  if (!existsSync(dbPath)) {
+    return { balance: null, balanceUnit: 'tokens', source: 'opencode', accountName: 'default', model: '-', status: 'inactive' };
+  }
+  return { balance: null, balanceUnit: 'tokens', source: 'opencode', accountName: 'default', model: '-', status: 'active' };
 }
 
 async function getHermesBalance(): Promise<BalanceResult> {

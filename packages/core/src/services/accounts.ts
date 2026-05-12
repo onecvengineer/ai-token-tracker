@@ -77,7 +77,7 @@ export async function listAccounts(options?: {
     }));
   }
 
-  const singleAccountSources = (['hermes'] as const).filter((candidate) => !source || source === candidate);
+  const singleAccountSources = (['hermes', 'opencode'] as const).filter((candidate) => !source || source === candidate);
   if (singleAccountSources.length > 0) {
     const balances = await getBalancesBySource(singleAccountSources);
     items.push(...balances.map((balance) => ({
@@ -136,7 +136,7 @@ export async function listAccounts(options?: {
     }
   }
 
-  const sourceOrder: Source[] = ['claude-code', 'codex', 'hermes'];
+  const sourceOrder: Source[] = ['claude-code', 'codex', 'hermes', 'opencode'];
   items.sort((a, b) => {
     const sourceDiff = sourceOrder.indexOf(a.source) - sourceOrder.indexOf(b.source);
     if (sourceDiff !== 0) return sourceDiff;

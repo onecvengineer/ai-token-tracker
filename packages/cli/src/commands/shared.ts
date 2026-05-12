@@ -2,7 +2,7 @@ import chalk from 'chalk';
 import { resolveUsageWindow } from '@att/core';
 import type { BalanceRateLimits, Source } from '@att/core';
 
-const SOURCES: Source[] = ['claude-code', 'codex', 'hermes'];
+const SOURCES: Source[] = ['claude-code', 'codex', 'hermes', 'opencode'];
 
 export function withErrorHandling<T extends unknown[]>(
   fn: (...args: T) => Promise<void> | void,

@@ -153,6 +153,7 @@ export default function DailyPage() {
                     <span className={`inline-flex rounded-md border px-2 py-1 text-xs font-medium ${
                       d.source === 'claude-code' ? 'border-[#eaa568]/25 bg-[#eaa568]/10 text-[#ffc68e]' :
                       d.source === 'codex' ? 'border-[#86b86f]/25 bg-[#86b86f]/10 text-[#b7dda8]' :
+                      d.source === 'opencode' ? 'border-[#7c5cfc]/25 bg-[#7c5cfc]/10 text-[#a88cff]' :
                       'border-[#62c7c9]/25 bg-[#62c7c9]/10 text-[#8fdadd]'
                     }`}>
                       {d.source}

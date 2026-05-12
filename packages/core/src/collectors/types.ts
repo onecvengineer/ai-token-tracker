@@ -1,4 +1,4 @@
-export type Source = 'claude-code' | 'codex' | 'hermes';
+export type Source = 'claude-code' | 'codex' | 'hermes' | 'opencode';
 
 export interface UsageRecord {
   id: string;
